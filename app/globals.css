@@ -12,15 +12,107 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+@layer base {
+  :root {
+    --color-bg: #F8FAFC;
+    --color-surface: #FFFFFF;
+    --color-ink: #0F172A;
+    --color-ink-soft: #64748B;
+    --color-ink-faint: #94A3B8;
+    --color-line: #E2E8F0;
+    --color-track: #F1F5F9;
+
+    --color-accent: #059669;
+    --color-accent-soft: #D1FAE5;
+    --color-accent-border: #A7F3D0;
+    --color-up: #059669;
+    --color-up-soft: #D1FAE5;
+
+    --color-down: #DC2626;
+    --color-down-soft: #FEE2E2;
+    --color-amber-soft: #FEF3C7;
+    --color-amber-ink: #92400E;
+    --color-blue: #2563EB;
+    --color-blue-soft: #DBEAFE;
+    --color-teal: #0D9488;
+    --color-indigo: #4F46E5;
+    --color-indigo-soft: #E0E7FF;
+
+    --color-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 1px 2px -1px rgba(15, 23, 42, 0.03);
+    --color-shadow-hover: 0 12px 24px -8px rgba(5, 150, 105, 0.18);
+
+    --donut-1: #059669;
+    --donut-2: #2563EB;
+    --donut-3: #0D9488;
+    --donut-4: #4F46E5;
+    --donut-5: #94A3B8;
+    --donut-6: #CBD5E1;
+
+    /* Highlight card (Live Insights) â€” distinct navy accent card in light mode */
+    --color-highlight-bg: linear-gradient(160deg, #1E293B, #334155);
+    --color-highlight-border: transparent;
+    --color-highlight-text: #ffffff;
+    --color-highlight-text-soft: #94A3B8;
+    --color-highlight-divider: rgba(255, 255, 255, 0.1);
+    --color-highlight-btn-bg: rgba(255, 255, 255, 0.08);
+
+    /* Map canvas â€” the box the SVG world map sits in */
+    --color-map-canvas: #F1F5F9;
+    --color-map-empty: #CBD5E1;
+  }
+
+  .dark {
+    --color-bg: #0B0F17;
+    --color-surface: rgba(21, 30, 47, 0.15);
+    --color-ink: #F8FAFC;
+    --color-ink-soft: #A8B3C7;
+    --color-ink-faint: #8B96AC;
+    --color-line: #26324A;
+    --color-track: #1E293B;
+
+    --color-accent: #10B981;
+    --color-accent-soft: rgba(16, 185, 129, 0.15);
+    --color-accent-border: rgba(16, 185, 129, 0.35);
+    --color-up: #10B981;
+    --color-up-soft: rgba(16, 185, 129, 0.15);
+
+    --color-down: #F87171;
+    --color-down-soft: rgba(248, 113, 113, 0.15);
+    --color-amber-soft: rgba(251, 191, 36, 0.15);
+    --color-amber-ink: #FCD34D;
+    --color-blue: #60A5FA;
+    --color-blue-soft: rgba(96, 165, 250, 0.15);
+    --color-teal: #2DD4BF;
+    --color-indigo: #818CF8;
+    --color-indigo-soft: rgba(129, 140, 248, 0.15);
+
+    --color-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5);
+    --color-shadow-hover: 0 12px 28px -6px rgba(16, 185, 129, 0.25);
+
+    --donut-1: #10B981;
+    --donut-2: #60A5FA;
+    --donut-3: #2DD4BF;
+    --donut-4: #818CF8;
+    --donut-5: #64748B;
+    --donut-6: #334155;
+
+    /* Highlight card â€” in dark mode, just blend with every other card so
+       the "black" matches instead of standing out as a separate navy tone. */
+    --color-highlight-bg: var(--color-surface);
+    --color-highlight-border: var(--color-line);
+    --color-highlight-text: var(--color-ink);
+    --color-highlight-text-soft: var(--color-ink-soft);
+    --color-highlight-divider: var(--color-line);
+    --color-highlight-btn-bg: var(--color-track);
+
+    /* Map canvas â€” near-black "screen", matching the reference template */
+    --color-map-canvas: #020617;
+    --color-map-empty: #1E293B;
+  }
 }

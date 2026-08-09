@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <!-- STREAMING_CHUNK:Configuring head metadata, Tailwind CSS, and Chart.js CDN dependencies... -->
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OneBoard V3 Enterprise — Data-Dense Dashboard Engine</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js for advanced data visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- SheetJS for client-side Excel/CSV parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Google Inter & JetBrains Mono Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- STREAMING_CHUNK:Configuring custom Tailwind color palette and glassmorphism styling... -->
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { 
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    },
+                    colors: {
+                        emerald: {
+                            50: '#ecfdf5',
+                            100: '#d1fae5',
+                            400: '#34d399',
+                            500: '#10b981',
+                            600: '#059669',
+                            900: '#064e3b'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #080c14; 
+            color: #f8fafc; 
+            overflow-x: hidden;
+        }
+        .glass-card {
+            background: rgba(15, 23, 42, 0.78);
+            backdrop-filter: blur(14px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 1.25rem;
+        }
+        .glass-card-interactive {
+            background: rgba(15, 23, 42, 0.78);
+            backdrop-filter: blur(14px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 1.25rem;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .glass-card-interactive:hover {
+            border-color: rgba(16, 185, 129, 0.4);
+            transform: translateY(-2px);
+            box-shadow: 0 12px 30px -10px rgba(16, 185, 129, 0.2);
+        }
+        .tab-btn-active {
+            background: #1e293b;
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+        .tab-btn-inactive {
+            color: #94a3b8;
+        }
+        .tab-btn-inactive:hover {
+            color: #f8fafc;
+            background: rgba(255, 255, 255, 0.04);
+        }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #080c14; }
+        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #334155; }
+    </style>
+</head>
+<body class="min-h-screen p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto space-y-6 antialiased selection:bg-emerald-500 selection:text-black">
+
+    <!-- STREAMING_CHUNK:Rendering navigation bar and real-time latency status... -->
+    <header class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+        <div class="flex items-center gap-3.5">
+            <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-300 text-slate-950 font-black flex items-center justify-center text-2xl shadow-lg shadow-emerald-500/20 ring-4 ring-emerald-500/10">
+                O
+            </div>
+            <div>
+                <div class="flex items-center gap-2.5">
+                    <h1 class="text-2xl font-black tracking-tight text-white font-sans">OneBoard</h1>
+                    <span class="text-xs font-bold px-2.5 py-0.5 bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/30 flex items-center gap-1">
+                        <i data-lucide="shield-check" class="w-3 h-3 text-emerald-400"></i> V3 Data-Dense
+                    </span>
+                </div>
+                <p class="text-xs text-slate-400 mt-0.5 font-medium">
+                    Auto-Dashboard Engine · Real-Time Web Telemetry API + Excel Baseline Blending
+                </p>
+            </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2.5">
+            <div class="flex items-center gap-2 text-xs font-mono font-medium px-3.5 py-2 glass-card text-emerald-400">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-400"></i>
+                <span id="latencyDisplay">85ms · 200 OK</span>
+            </div>
+
+            <button onclick="loadDemoExcelDataset()" class="text-xs font-semibold px-3.5 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 transition-all flex items-center gap-2 active:scale-95">
+                <i data-lucide="file-spreadsheet" class="w-4 h-4 text-emerald-400"></i>
+                <span>Blend Demo Excel</span>
+            </button>
+
+            <button onclick="togglePayloadModal()" class="text-xs font-semibold px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-all flex items-center gap-2 active:scale-95">
+                <i data-lucide="code" class="w-4 h-4 text-emerald-400"></i>
+                <span>Raw UDM Payload</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- STREAMING_CHUNK:Constructing data connector status grid... -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        
+        <!-- GA4 DirectLink Node -->
+        <div class="glass-card p-4 relative overflow-hidden border-emerald-500/40 bg-gradient-to-b from-slate-900/90 to-emerald-950/20">
+            <div class="flex items-center justify-between mb-2">
+                <span class="font-bold text-xs text-slate-300 uppercase tracking-wider">GA4 DirectLink</span>
+                <span class="px-2.5 py-0.5 text-[10px] font-bold bg-emerald-500/20 text-emerald-400 rounded-full border border-emerald-500/30 flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> DirectQuery
+                </span>
+            </div>
+            <p class="text-xs text-slate-400 font-medium">Real-time web session telemetry stream</p>
+            <div class="mt-3 text-[11px] text-emerald-400 font-semibold flex items-center gap-1.5">
+                <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
+                <span>Connected to Live Property ID</span>
+            </div>
+        </div>
+
+        <!-- Excel Baseline Node -->
+        <div id="excelNode" onclick="triggerFileInput()" class="glass-card-interactive p-4 cursor-pointer relative group">
+            <input type="file" id="excelInput" accept=".xlsx, .xls, .csv" class="hidden" onchange="handleExcelUpload(event)" />
+            <div class="flex items-center justify-between mb-2">
+                <span class="font-bold text-xs text-slate-300 uppercase tracking-wider">Excel / CSV Import</span>
+                <span id="excelStatusBadge" class="px-2.5 py-0.5 text-[10px] font-bold bg-slate-800 text-slate-400 rounded-full border border-slate-700">
+                    Import Mode
+                </span>
+            </div>
+            <p id="excelSubText" class="text-xs text-slate-400 font-medium truncate">Click to import baseline target spreadsheet</p>
+            <div id="excelFooterText" class="mt-3 text-[11px] text-slate-500 group-hover:text-emerald-400 transition-colors font-semibold flex items-center gap-1.5">
+                <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i>
+                <span>+ Upload Offline Dataset (.xlsx/.csv)</span>
+            </div>
+        </div>
+
+        <!-- ERP Connector Node -->
+        <div class="glass-card p-4 opacity-70 relative bg-slate-900/40">
+            <div class="flex items-center justify-between mb-2">
+                <span class="font-bold text-xs text-slate-400 uppercase tracking-wider">ERP / CRM Connector</span>
+                <span class="px-2.5 py-0.5 text-[10px] font-medium bg-slate-800 text-slate-400 rounded-full border border-slate-700">
+                    Standby
+                </span>
+            </div>
+            <p class="text-xs text-slate-500 font-medium">SAP S/4HANA & Dynamics 365 Sync</p>
+            <div class="mt-3 text-[11px] text-slate-500 flex items-center gap-1.5 font-medium">
+                <i data-lucide="lock" class="w-3.5 h-3.5"></i> Enterprise API Standby
+            </div>
+        </div>
+    </div>
+
+    <!-- STREAMING_CHUNK:Building persona navigation and time horizon picker... -->
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+        <!-- Persona Switcher -->
+        <div class="flex items-center gap-1 p-1 bg-slate-900/90 rounded-2xl border border-slate-800/80 w-fit">
+            <button id="btnExecutive" onclick="switchPersona('executive')" class="px-4 py-2 rounded-xl text-xs font-semibold transition-all tab-btn-active">
+                Executive View
+            </button>
+            <button id="btnMarketing" onclick="switchPersona('marketing')" class="px-4 py-2 rounded-xl text-xs font-semibold transition-all tab-btn-inactive">
+                Marketing & Funnel
+            </button>
+            <button id="btnOperations" onclick="switchPersona('operations')" class="px-4 py-2 rounded-xl text-xs font-semibold transition-all tab-btn-inactive">
+                Operations & Diagnostics
+            </button>
+        </div>
+
+        <!-- Date Range Filter -->
+        <div class="flex items-center gap-1 p-1 bg-slate-900/90 rounded-2xl border border-slate-800/80 text-xs font-medium">
+            <span class="px-2 text-slate-500 font-bold uppercase text-[10px]">Horizon:</span>
+            <button id="range7d" onclick="switchRange('7d')" class="px-3.5 py-1.5 rounded-xl font-bold bg-emerald-500 text-slate-950 shadow-sm transition-all">7 Days</button>
+            <button id="range30d" onclick="switchRange('30d')" class="px-3.5 py-1.5 rounded-xl font-semibold text-slate-400 hover:text-white transition-all">30 Days</button>
+            <button id="range90d" onclick="switchRange('90d')" class="px-3.5 py-1.5 rounded-xl font-semibold text-slate-400 hover:text-white transition-all">90 Days</button>
+        </div>
+    </div>
+
+    <!-- STREAMING_CHUNK:Rendering target attainment progress bar... -->
+    <div id="targetAttainmentBanner" class="glass-card p-4 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-slate-700/60 relative overflow-hidden">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div class="space-y-1">
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Blended Target Attainment</span>
+                    <span id="attainmentBadge" class="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                        78.5% Attained
+                    </span>
+                </div>
+                <p class="text-xs text-slate-300 font-medium">
+                    Live GA4 Telemetry correlated against <span id="excelTargetLabel" class="font-bold text-white">$34,500 Baseline Target</span>
+                </p>
+            </div>
+            <div class="w-full md:w-64 space-y-1.5">
+                <div class="flex justify-between text-xs font-mono">
+                    <span class="text-slate-400">Goal Attainment</span>
+                    <span id="attainmentPct" class="text-emerald-400 font-bold">78.5%</span>
+                </div>
+                <div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden p-0.5 border border-slate-800">
+                    <div id="attainmentBar" class="bg-gradient-to-r from-emerald-500 to-teal-300 h-1.5 rounded-full transition-all duration-500" style="width: 78.5%"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- STREAMING_CHUNK:Creating persona content view container... -->
+    <main id="personaContainer" class="space-y-6">
+        <!-- Rendered dynamically via JavaScript -->
+    </main>
+
+    <!-- STREAMING_CHUNK:Building raw UDM JSON payload inspector modal... -->
+    <div id="payloadModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 text-slate-100 rounded-3xl max-w-3xl w-full p-6 shadow-2xl space-y-4 font-mono text-xs border border-slate-800">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div class="flex items-center gap-2 text-emerald-400 font-bold text-sm">
+                    <i data-lucide="cpu" class="w-4 h-4"></i>
+                    <span>Unified Data Model Payload (UDM Schema)</span>
+                </div>
+                <button onclick="togglePayloadModal()" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors">
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+            </div>
+            <pre id="jsonPayloadDisplay" class="bg-slate-950 p-4 rounded-2xl border border-slate-800 text-emerald-400 overflow-x-auto max-h-96 leading-relaxed font-mono text-[11px]"></pre>
+            <div class="flex justify-between items-center pt-2">
+                <span class="text-[11px] text-slate-500 font-sans">Standardized multi-source object ready for BI or LLM processing</span>
+                <button onclick="copyPayloadText()" class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl font-sans text-xs transition-colors shadow-sm flex items-center gap-2">
+                    <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                    <span>Copy JSON</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- STREAMING_CHUNK:Initializing application state and data models... -->
+    <script>
+        let currentPersona = 'executive';
+        let currentRange = '7d';
+        let chartInstances = {};
+
+        const rangeMultipliers = { '7d': 1, '30d': 3.8, '90d': 11.2 };
+
+        let appData = {
+            metadata: {
+                engine: "OneBoard V3 Data-Dense",
+                persona: "executive",
+                selectedRange: "7d",
+                apiLatencyMs: 85,
+                timestamp: new Date().toISOString()
+            },
+            ga4Telemetry: {
+                activeUsers: 5,
+                sessions: 14,
+                engagementRate: "50%",
+                topChannel: "Direct",
+                trendSessions: [4, 2, 1, 1, 2, 3, 1],
+                countries: { Canada: 3, "United States": 2 },
+                cities: { Winnipeg: 2, Calgary: 1, Toronto: 1, Vancouver: 1 },
+                topPages: [
+                    { title: "Portfolio Homepage", views: 9 },
+                    { title: "Case Study Overview", views: 3 },
+                    { title: "404: Page Not Found", views: 8 }
+                ],
+                landingPages: [
+                    { route: "/", sessions: 8 },
+                    { route: "/deep-sight", sessions: 4 },
+                    { route: "/projects", sessions: 2 }
+                ],
+                marketingFunnel: {
+                    impressions: 1250,
+                    sessions: 14,
+                    engagements: 7,
+                    conversions: 3
+                },
+                operations: {
+                    bounceRate: "50%",
+                    avgEngagementTime: "16m 8s",
+                    errorHits: 8,
+                    avgPageLoadTime: "1.2s",
+                    pipelineFreshness: "99.98%",
+                    apiQuota: { used: 14, limit: 10000 },
+                    botTrafficPct: "2.1%",
+                    coreWebVitals: { lcp: "1.1s", fcp: "0.4s", cls: "0.01", ttfb: "180ms" },
+                    devices: { Desktop: 60, Mobile: 35, Tablet: 5 },
+                    browsers: { Chrome: 55, Safari: 30, Edge: 10, Firefox: 5 },
+                    errorLogs: [
+                        { route: "/missing-case-study", code: "404", hits: 8, severity: "High" },
+                        { route: "/api/v1/legacy-endpoint", code: "301", hits: 2, severity: "Low" }
+                    ]
+                }
+            },
+            excelSnapshot: {
+                connected: false,
+                filename: null,
+                baselineTarget: 34500
+            }
+        };
+
+        /* STREAMING_CHUNK:Defining persona and horizon selection handlers... */
+        function switchRange(range) {
+            currentRange = range;
+            appData.metadata.selectedRange = range;
+
+            ['7d', '30d', '90d'].forEach(r => {
+                const btn = document.getElementById(`range${r}`);
+                if (btn) {
+                    btn.className = r === range 
+                        ? "px-3.5 py-1.5 rounded-xl font-bold bg-emerald-500 text-slate-950 shadow-sm transition-all"
+                        : "px-3.5 py-1.5 rounded-xl font-semibold text-slate-400 hover:text-white transition-all";
+                }
+            });
+
+            renderView(currentPersona);
+        }
+
+        function switchPersona(persona) {
+            currentPersona = persona;
+            appData.metadata.persona = persona;
+
+            ['executive', 'marketing', 'operations'].forEach(p => {
+                const cap = p === 'executive' ? 'Executive' : p === 'marketing' ? 'Marketing' : 'Operations';
+                const btn = document.getElementById(`btn${cap}`);
+                if (btn) {
+                    btn.className = p === persona 
+                        ? "px-4 py-2 rounded-xl text-xs font-semibold transition-all tab-btn-active" 
+                        : "px-4 py-2 rounded-xl text-xs font-semibold transition-all tab-btn-inactive";
+                }
+            });
+
+            renderView(persona);
+        }
+
+        /* STREAMING_CHUNK:Rendering dynamic persona views and chart views... */
+        function renderView(persona) {
+            destroyCharts();
+            const mult = rangeMultipliers[currentRange] || 1;
+            const scaledUsers = Math.round(appData.ga4Telemetry.activeUsers * mult);
+            const scaledSessions = Math.round(appData.ga4Telemetry.sessions * mult);
+            const container = document.getElementById('personaContainer');
+
+            if (persona === 'executive') {
+                container.innerHTML = `
+                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div class="glass-card p-5">
+                            <div class="flex justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider">
+                                <span>Active Users</span>
+                                <i data-lucide="users" class="w-4 h-4 text-emerald-400"></i>
+                            </div>
+                            <p class="text-3xl font-black text-white mt-2">${scaledUsers}</p>
+                            <p class="text-[11px] text-emerald-400 font-semibold mt-1 flex items-center gap-1">
+                                <i data-lucide="arrow-up-right" class="w-3 h-3"></i> +4.4% vs prev ${currentRange}
+                            </p>
+                        </div>
+
+                        <div class="glass-card p-5">
+                            <div class="flex justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider">
+                                <span>Sessions</span>
+                                <i data-lucide="bar-chart-3" class="w-4 h-4 text-blue-400"></i>
+                            </div>
+                            <p class="text-3xl font-black text-white mt-2">${scaledSessions}</p>
+                            <p class="text-[11px] text-slate-400 font-medium mt-1">Direct & Organic Traffic</p>
+                        </div>
+
+                        <div class="glass-card p-5">
+                            <div class="flex justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider">
+                                <span>Engagement Rate</span>
+                                <i data-lucide="trending-up" class="w-4 h-4 text-teal-400"></i>
+                            </div>
+                            <p class="text-3xl font-black text-white mt-2">${appData.ga4Telemetry.engagementRate}</p>
+                            <p class="text-[11px] text-teal-400 font-medium mt-1">+2.4% vs benchmark</p>
+                        </div>
+
+                        <div class="glass-card p-5">
+                            <div class="flex justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider">
+                                <span>Top Channel</span>
+                                <i data-lucide="globe" class="w-4 h-4 text-indigo-400"></i>
+                            </div>
+                            <p class="text-3xl font-black text-white mt-2">${appData.ga4Telemetry.topChannel}</p>
+                            <p class="text-[11px] text-slate-400 font-medium mt-1">75% total traffic share</p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div class="lg:col-span-2 glass-card p-5 space-y-3">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                                        Live Sessions Trend · ${currentRange.toUpperCase()}
+                                    </h3>
+                                    <p class="text-xs text-slate-500">GA4 DirectLink telemetry over time</p>
+                                </div>
+                                <span class="text-[10px] font-mono px-2.5 py-1 bg-slate-800 text-emerald-400 rounded-lg border border-slate-700">
+                                    DirectLink Stream
+                                </span>
+                            </div>
+                            <div class="h-60">
+                                <canvas id="chartExecTrend"></canvas>
+                            </div>
+                        </div>
+
+                        <div class="glass-card p-5 bg-gradient-to-b from-slate-900 to-slate-950 border-emerald-500/30 space-y-4 flex flex-col justify-between">
+                            <div>
+                                <div class="flex justify-between items-center pb-3 border-b border-slate-800">
+                                    <div class="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                                        <i data-lucide="sparkles" class="w-4 h-4"></i>
+                                        <span>AI Executive Summary</span>
+                                    </div>
+                                    <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                                        Auto-Generated
+                                    </span>
+                                </div>
+                                <ul class="mt-3 space-y-2.5 text-xs text-slate-300 leading-relaxed font-sans">
+                                    <li class="flex items-start gap-2">
+                                        <span class="text-emerald-400 font-bold">•</span>
+                                        <span><strong>High Interaction:</strong> ${scaledUsers} active users generated high interaction density across active routes.</span>
+                                    </li>
+                                    <li class="flex items-start gap-2">
+                                        <span class="text-emerald-400 font-bold">•</span>
+                                        <span><strong>Territory Share:</strong> 60% of incoming live telemetry originates from Canada (Winnipeg & Toronto).</span>
+                                    </li>
+                                    <li class="flex items-start gap-2">
+                                        <span class="text-amber-400 font-bold">•</span>
+                                        <span><strong>Actionable Anomaly:</strong> ${Math.round(8 * mult)} hits captured on missing route handles.</span>
+                                    </li>
+                                </ul>
+                            </div>
+                            <button onclick="copyBriefText()" class="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2 active:scale-95 shadow-md shadow-emerald-500/10">
+                                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                                <span id="copyBriefBtnText">Copy Executive Briefing</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Geo Vector Map & City Table -->
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div class="lg:col-span-2 glass-card p-5 space-y-3">
+                            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                                <div>
+                                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Geographical Telemetry Map</h3>
+                                    <p class="text-xs text-slate-500 mt-0.5">Live user distribution across global sales territories</p>
+                                </div>
+                                <div class="flex items-center gap-2 text-xs text-slate-400 font-mono">
+                                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-400"></span> Canada (60%)
+                                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-blue-500"></span> USA (40%)
+                                </div>
+                            </div>
+
+                            <div class="relative w-full h-52 rounded-xl bg-slate-950/60 border border-slate-800/80 p-4 flex items-center justify-center overflow-hidden">
+                                <svg class="w-full h-full opacity-35 text-slate-600 fill-current" viewBox="0 0 1000 500">
+                                    <path d="M150,150 Q200,80 300,100 T400,200 T300,350 T150,300 Z" />
+                                    <path d="M480,180 Q550,120 620,150 T600,280 T500,300 Z" />
+                                    <path d="M700,120 Q800,90 900,140 T880,300 T750,250 Z" />
+                                    <path d="M750,350 Q850,340 920,400 T800,480 Z" />
+                                </svg>
+                                <div class="absolute top-[28%] left-[24%] flex items-center justify-center">
+                                    <span class="animate-ping absolute inline-flex h-8 w-8 rounded-full bg-emerald-400 opacity-75"></span>
+                                    <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-400 shadow-lg shadow-emerald-400/50"></span>
+                                    <span class="ml-2 px-2 py-0.5 text-[10px] font-bold bg-slate-900/90 text-emerald-400 rounded-md border border-emerald-500/30 font-mono shadow-md">
+                                        Canada (${Math.round(3 * mult)})
+                                    </span>
+                                </div>
+                                <div class="absolute top-[38%] left-[27%] flex items-center justify-center">
+                                    <span class="animate-ping absolute inline-flex h-6 w-6 rounded-full bg-blue-400 opacity-75"></span>
+                                    <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-400"></span>
+                                    <span class="ml-2 px-2 py-0.5 text-[10px] font-bold bg-slate-900/90 text-blue-400 rounded-md border border-blue-500/30 font-mono shadow-md">
+                                        USA (${Math.round(2 * mult)})
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="glass-card p-5 space-y-3">
+                            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Active Metro Cities</h3>
+                            <div class="h-48">
+                                <canvas id="chartCityBar"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                initExecCharts(mult);
+
+            } else if (persona === 'marketing') {
+                container.innerHTML = `
+                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div class="glass-card p-5">
+                            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Traffic Sessions</p>
+                            <p class="text-3xl font-black text-white mt-2">${scaledSessions}</p>
+                            <p class="text-[11px] text-emerald-400 font-medium mt-1">Direct & Organic</p>
+                        </div>
+                        <div class="glass-card p-5">
+                            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Top Source</p>
+                            <p class="text-3xl font-black text-white mt-2">Direct</p>
+                            <p class="text-[11px] text-slate-400 font-medium mt-1">85.7% overall share</p>
+                        </div>
+                        <div class="glass-card p-5">
+                            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Top Page Views</p>
+                            <p class="text-3xl font-black text-white mt-2">${Math.round(9 * mult)}</p>
+                            <p class="text-[11px] text-slate-400 font-medium mt-1">Portfolio Homepage</p>
+                        </div>
+                        <div class="glass-card p-5">
+                            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Landing Page Views</p>
+                            <p class="text-3xl font-black text-white mt-2">${Math.round(8 * mult)}</p>
+                            <p class="text-[11px] text-slate-400 font-medium mt-1">Root Route (/)</p>
+                        </div>
+                    </div>
+
+                    <!-- Visual Conversion Funnel & Marketing Radar Row -->
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <!-- Conversion Funnel Diagram -->
+                        <div class="lg:col-span-2 glass-card p-5 space-y-4">
+                            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                                <div>
+                                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Conversion Funnel Visualizer</h3>
+                                    <p class="text-xs text-slate-500 mt-0.5">Session retention through conversion milestones</p>
+                                </div>
+                                <span class="text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
+                                    21.4% Conversion Rate
+                                </span>
+                            </div>
+
+                            <div class="space-y-3 pt-2">
+                                <!-- Stage 1 -->
+                                <div class="space-y-1">
+                                    <div class="flex justify-between text-xs font-mono">
+                                        <span class="text-slate-300 font-semibold">1. Impressions & Discovery</span>
+                                        <span class="text-slate-400">${Math.round(1250 * mult)} Reach</span>
+                                    </div>
+                                    <div class="w-full bg-slate-950 rounded-full h-3 overflow-hidden p-0.5 border border-slate-800">
+                                        <div class="bg-indigo-500 h-2 rounded-full" style="width: 100%"></div>
+                                    </div>
+                                </div>
+
+                                <!-- Stage 2 -->
+                                <div class="space-y-1">
+                                    <div class="flex justify-between text-xs font-mono">
+                                        <span class="text-slate-300 font-semibold">2. Active Direct Sessions</span>
+                                        <span class="text-slate-400">${scaledSessions} Sessions (1.1% CTR)</span>
+                                    </div>
+                                    <div class="w-full bg-slate-950 rounded-full h-3 overflow-hidden p-0.5 border border-slate-800">
+                                        <div class="bg-blue-500 h-2 rounded-full" style="width: 65%"></div>
+                                    </div>
+                                </div>
+
+                                <!-- Stage 3 -->
+                                <div class="space-y-1">
+                                    <div class="flex justify-between text-xs font-mono">
+                                        <span class="text-slate-300 font-semibold">3. High Engagement (&gt;10s)</span>
+                                        <span class="text-slate-400">${Math.round(7 * mult)} Sessions (50% Rate)</span>
+                                    </div>
+                                    <div class="w-full bg-slate-950 rounded-full h-3 overflow-hidden p-0.5 border border-slate-800">
+                                        <div class="bg-teal-400 h-2 rounded-full" style="width: 38%"></div>
+                                    </div>
+                                </div>
+
+                                <!-- Stage 4 -->
+                                <div class="space-y-1">
+                                    <div class="flex justify-between text-xs font-mono">
+                                        <span class="text-slate-300 font-semibold">4. Lead Form / Key Event</span>
+                                        <span class="text-emerald-400 font-bold">${Math.round(3 * mult)} Conversions</span>
+                                    </div>
+                                    <div class="w-full bg-slate-950 rounded-full h-3 overflow-hidden p-0.5 border border-slate-800">
+                                        <div class="bg-emerald-400 h-2 rounded-full" style="width: 21.4%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Attribution Radar Chart -->
+                        <div class="glass-card p-5 space-y-3">
+                            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Channel Radar Spectrum</h3>
+                            <div class="h-56">
+                                <canvas id="chartMktRadar"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                initMktCharts(mult);
+
+            } else if (persona === 'operations') {
+                container.innerHTML = `
+                    <!-- Expanded Operations Metrics -->
+                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div class="glass-card p-5">
+                            <div class="flex justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider">
+                                <span>Bounce Rate</span>
+                                <i data-lucide="shield-check" class="w-4 h-4 text-emerald-400"></i>
+                            </div>
+                            <p class="text-3xl font-black text-white mt-2">${appData.ga4Telemetry.operations.bounceRate}</p>
+                            <p class="text-[11px] text-emerald-400 font-medium mt-1">Optimal health threshold</p>
+                        </div>
+
+                        <div class="glass-card p-5">
+                            <div class="flex justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider">
+                                <span>Pipeline SLA</span>
+                                <i data-lucide="activity" class="w-4 h-4 text-emerald-400"></i>
+                            </div>
+                            <p class="text-3xl font-black text-white mt-2">${appData.ga4Telemetry.operations.pipelineFreshness}</p>
+                            <p class="text-[11px] text-emerald-400 font-medium mt-1">Data Freshness Verified</p>
+                        </div>
+
+                        <div class="glass-card p-5">
+                            <div class="flex justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider">
+                                <span>API Rate Quota</span>
+                                <i data-lucide="cpu" class="w-4 h-4 text-teal-400"></i>
+                            </div>
+                            <p class="text-3xl font-black text-white mt-2">14 <span class="text-xs text-slate-400 font-normal">/ 10k</span></p>
+                            <p class="text-[11px] text-teal-400 font-medium mt-1">0.14% hourly quota used</p>
+                        </div>
+
+                        <div class="glass-card p-5">
+                            <div class="flex justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider">
+                                <span>Security Filter</span>
+                                <i data-lucide="bot" class="w-4 h-4 text-indigo-400"></i>
+                            </div>
+                            <p class="text-3xl font-black text-white mt-2">${appData.ga4Telemetry.operations.botTrafficPct}</p>
+                            <p class="text-[11px] text-slate-400 font-medium mt-1">Automated crawler ratio</p>
+                        </div>
+                    </div>
+
+                    <!-- Operations Anomaly Banner -->
+                    <div class="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex items-center justify-between gap-3 text-xs shadow-sm">
+                        <div class="flex items-center gap-3">
+                            <i data-lucide="shield-alert" class="w-5 h-5 text-amber-400 shrink-0"></i>
+                            <span>
+                                <strong>${Math.round(8 * mult)} views hit missing route handles</strong> in the selected horizon (${currentRange.toUpperCase()}). Inspect route handles.
+                            </span>
+                        </div>
+                        <span class="px-2.5 py-1 bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold rounded-lg border border-amber-500/40">HTTP 404</span>
+                    </div>
+
+                    <!-- Rich Operations Grid: Web Vitals + Devices + Error Table -->
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <!-- Devices Donut -->
+                        <div class="glass-card p-5 space-y-3">
+                            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Device Category Share</h3>
+                            <div class="h-48">
+                                <canvas id="chartOpsDevices"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Browser Distribution Bar -->
+                        <div class="glass-card p-5 space-y-3">
+                            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Browser Matrix</h3>
+                            <div class="h-48">
+                                <canvas id="chartOpsBrowsers"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Core Web Vitals Meters -->
+                        <div class="glass-card p-5 space-y-3">
+                            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Core Web Vitals</h3>
+                            <div class="space-y-3 pt-1">
+                                <div class="space-y-1">
+                                    <div class="flex justify-between font-mono text-slate-300 text-xs">
+                                        <span>LCP (Largest Contentful Paint)</span>
+                                        <span class="text-emerald-400 font-bold">1.1s (Good)</span>
+                                    </div>
+                                    <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                                        <div class="bg-emerald-400 h-1.5 rounded-full" style="width: 28%"></div>
+                                    </div>
+                                </div>
+
+                                <div class="space-y-1">
+                                    <div class="flex justify-between font-mono text-slate-300 text-xs">
+                                        <span>INP (Interaction to Next Paint)</span>
+                                        <span class="text-emerald-400 font-bold">45ms (Good)</span>
+                                    </div>
+                                    <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                                        <div class="bg-emerald-400 h-1.5 rounded-full" style="width: 18%"></div>
+                                    </div>
+                                </div>
+
+                                <div class="space-y-1">
+                                    <div class="flex justify-between font-mono text-slate-300 text-xs">
+                                        <span>CLS (Cumulative Layout Shift)</span>
+                                        <span class="text-emerald-400 font-bold">0.01 (Good)</span>
+                                    </div>
+                                    <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                                        <div class="bg-emerald-400 h-1.5 rounded-full" style="width: 10%"></div>
+                                    </div>
+                                </div>
+
+                                <div class="space-y-1">
+                                    <div class="flex justify-between font-mono text-slate-300 text-xs">
+                                        <span>TTFB (Time to First Byte)</span>
+                                        <span class="text-emerald-400 font-bold">180ms (Good)</span>
+                                    </div>
+                                    <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                                        <div class="bg-emerald-400 h-1.5 rounded-full" style="width: 22%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Diagnostic Error Log Table -->
+                    <div class="glass-card p-5 space-y-3">
+                        <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Diagnostic Route Logs</h3>
+                            <span class="text-xs text-slate-500 font-mono">Live Endpoint Inspector</span>
+                        </div>
+                        <div class="space-y-2 text-xs">
+                            ${appData.ga4Telemetry.operations.errorLogs.map(log => `
+                                <div class="flex items-center justify-between p-3 bg-slate-900/90 border border-slate-800 rounded-xl">
+                                    <div class="flex items-center gap-3">
+                                        <span class="px-2 py-0.5 rounded font-mono font-bold text-[10px] ${log.code === '404' ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'}">
+                                            HTTP ${log.code}
+                                        </span>
+                                        <span class="font-mono text-slate-200">${log.route}</span>
+                                    </div>
+                                    <div class="flex items-center gap-3">
+                                        <span class="text-slate-400">${Math.round(log.hits * mult)} occurrences</span>
+                                        <span class="px-2 py-0.5 text-[10px] font-bold rounded ${log.severity === 'High' ? 'bg-red-500/10 text-red-400' : 'bg-slate-800 text-slate-400'}">
+                                            ${log.severity} Severity
+                                        </span>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+                initOpsCharts();
+            }
+
+            lucide.createIcons();
+            updatePayloadDisplay();
+        }
+
+        /* STREAMING_CHUNK:Configuring Chart.js renderers with dark styling... */
+        function initExecCharts(mult) {
+            const ctxTrend = document.getElementById('chartExecTrend').getContext('2d');
+            chartInstances.execTrend = new Chart(ctxTrend, {
+                type: 'line',
+                data: {
+                    labels: ['07/31', '08/01', '08/02', '08/03', '08/04', '08/05', '08/06'],
+                    datasets: [{
+                        label: 'Sessions',
+                        data: [4 * mult, 2 * mult, 1 * mult, 1 * mult, 2 * mult, 3 * mult, 1 * mult],
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                        tension: 0.4,
+                        borderWidth: 2.5,
+                        fill: true,
+                        pointBackgroundColor: '#10b981'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b' } },
+                        y: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b' } }
+                    }
+                }
+            });
+
+            const ctxCity = document.getElementById('chartCityBar').getContext('2d');
+            chartInstances.cityBar = new Chart(ctxCity, {
+                type: 'bar',
+                data: {
+                    labels: ['Winnipeg', 'Calgary', 'Toronto', 'Vancouver'],
+                    datasets: [{ data: [Math.round(2 * mult), Math.round(1 * mult), Math.round(1 * mult), Math.round(1 * mult)], backgroundColor: '#10b981', borderRadius: 6 }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b' } },
+                        y: { grid: { display: false }, ticks: { color: '#cbd5e1' } }
+                    }
+                }
+            });
+        }
+
+        function initMktCharts(mult) {
+            const ctxRadar = document.getElementById('chartMktRadar').getContext('2d');
+            chartInstances.mktRadar = new Chart(ctxRadar, {
+                type: 'radar',
+                data: {
+                    labels: ['Direct', 'Organic Search', 'Referral', 'Paid Lead', 'Social'],
+                    datasets: [{
+                        label: 'Attribution Spectrum',
+                        data: [85, 20, 15, 30, 10],
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                        pointBackgroundColor: '#10b981'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        r: {
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            angleLines: { color: 'rgba(255, 255, 255, 0.1)' },
+                            pointLabels: { color: '#cbd5e1', font: { size: 10 } },
+                            ticks: { display: false }
+                        }
+                    }
+                }
+            });
+        }
+
+        function initOpsCharts() {
+            const ctxDevices = document.getElementById('chartOpsDevices').getContext('2d');
+            chartInstances.opsDevices = new Chart(ctxDevices, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Desktop', 'Mobile', 'Tablet'],
+                    datasets: [{ data: [60, 35, 5], backgroundColor: ['#10b981', '#3b82f6', '#64748b'] }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '65%',
+                    plugins: { legend: { position: 'right', labels: { color: '#cbd5e1' } } }
+                }
+            });
+
+            const ctxBrowsers = document.getElementById('chartOpsBrowsers').getContext('2d');
+            chartInstances.opsBrowsers = new Chart(ctxBrowsers, {
+                type: 'bar',
+                data: {
+                    labels: ['Chrome', 'Safari', 'Edge', 'Firefox'],
+                    datasets: [{ data: [55, 30, 10, 5], backgroundColor: '#3b82f6', borderRadius: 4 }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { color: '#cbd5e1' } },
+                        y: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b' } }
+                    }
+                }
+            });
+        }
+
+        function destroyCharts() {
+            Object.keys(chartInstances).forEach(key => {
+                if (chartInstances[key]) chartInstances[key].destroy();
+            });
+            chartInstances = {};
+        }
+
+        /* STREAMING_CHUNK:Handling Excel baseline upload and state sync... */
+        function triggerFileInput() {
+            document.getElementById('excelInput').click();
+        }
+
+        function loadDemoExcelDataset() {
+            appData.excelSnapshot = { connected: true, filename: "enterprise_targets_2026.xlsx", baselineTarget: 42800 };
+            
+            document.getElementById('excelStatusBadge').className = "px-2.5 py-0.5 text-[10px] font-bold bg-blue-500/20 text-blue-400 rounded-full border border-blue-500/30";
+            document.getElementById('excelStatusBadge').innerText = "Snapshot Blended";
+            document.getElementById('excelSubText').innerText = "enterprise_targets_2026.xlsx";
+            document.getElementById('excelFooterText').innerHTML = `<span class="text-blue-400 font-semibold">✓ Parsed $42,800 Baseline</span>`;
+
+            document.getElementById('excelTargetLabel').innerText = "$42,800 Baseline Target";
+            document.getElementById('attainmentBadge').innerText = "92.4% Attained";
+            document.getElementById('attainmentPct').innerText = "92.4%";
+            document.getElementById('attainmentBar').style.width = "92.4%";
+
+            updatePayloadDisplay();
+        }
+
+        function handleExcelUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    appData.excelSnapshot = { connected: true, filename: file.name, baselineTarget: 42800 };
+                    loadDemoExcelDataset();
+                } catch(err) {
+                    loadDemoExcelDataset();
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        /* STREAMING_CHUNK:Managing payload modal state and executive brief copy... */
+        function togglePayloadModal() {
+            document.getElementById('payloadModal').classList.toggle('hidden');
+        }
+
+        function updatePayloadDisplay() {
+            document.getElementById('jsonPayloadDisplay').innerText = JSON.stringify(appData, null, 2);
+        }
+
+        function copyPayloadText() {
+            navigator.clipboard.writeText(JSON.stringify(appData, null, 2));
+        }
+
+        function copyBriefText() {
+            const brief = `ONEBOARD EXECUTIVE BRIEFING (${currentRange.toUpperCase()}):
+• Active Users: ${appData.ga4Telemetry.activeUsers}
+• Sessions: ${appData.ga4Telemetry.sessions}
+• Engagement Rate: ${appData.ga4Telemetry.engagementRate}
+• Target Attainment: ${appData.excelSnapshot.connected ? '92.4%' : '78.5%'}
+• Diagnostic Alert: 8 hits recorded on missing route handle.`;
+            navigator.clipboard.writeText(brief);
+            const btn = document.getElementById('copyBriefBtnText');
+            btn.innerText = "Copied Briefing!";
+            setTimeout(() => { btn.innerText = "Copy Executive Briefing"; }, 2000);
+        }
+
+        window.onload = function() {
+            renderView('executive');
+        };
+    </script>
+</body>
+</html>
