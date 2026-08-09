@@ -57,6 +57,8 @@ import {
   X,
   Lock,
   Upload,
+  Sun,
+  Moon,
 } from "lucide-react";
 
 /* ============== Data shapes ============== */
@@ -73,9 +75,6 @@ type ExecutiveData = {
   geoCountries?: { country: string; activeUsers: number }[];
   geoCities?: { city: string; activeUsers: number }[];
   newVsReturning?: { segment: string; activeUsers: number }[];
-  // Real period-over-period comparison (e.g. this 30 days vs. the prior 30
-  // days) computed server-side — not derived from the trend chart's
-  // endpoints, which understates change on longer ranges.
   deltas?: { activeUsers: number | null; sessions: number | null };
   queryMs?: number;
 };
@@ -122,30 +121,36 @@ const DEFAULT_RANGE: Range = "30d";
 /* ============== Design tokens ============== */
 
 const COLORS = {
-  bg: "#F8FAFC",
-  surface: "#FFFFFF",
-  ink: "#0F172A",
-  inkSoft: "#64748B",
-  inkFaint: "#94A3B8",
-  line: "#E2E8F0",
-  track: "#F1F5F9",
-  accent: "#059669",
-  accentSoft: "#D1FAE5",
-  up: "#059669",
-  upSoft: "#D1FAE5",
-  down: "#DC2626",
-  downSoft: "#FEE2E2",
-  amberSoft: "#FEF3C7",
-  amberInk: "#92400E",
-  blue: "#2563EB",
-  blueSoft: "#DBEAFE",
-  teal: "#0D9488",
-  indigo: "#4F46E5",
-  indigoSoft: "#E0E7FF",
+  bg: "var(--color-bg)",
+  surface: "var(--color-surface)",
+  ink: "var(--color-ink)",
+  inkSoft: "var(--color-ink-soft)",
+  inkFaint: "var(--color-ink-faint)",
+  line: "var(--color-line)",
+  track: "var(--color-track)",
+  accent: "var(--color-accent)",
+  accentSoft: "var(--color-accent-soft)",
+  up: "var(--color-up)",
+  upSoft: "var(--color-up-soft)",
+  down: "var(--color-down)",
+  downSoft: "var(--color-down-soft)",
+  amberSoft: "var(--color-amber-soft)",
+  amberInk: "var(--color-amber-ink)",
+  blue: "var(--color-blue)",
+  blueSoft: "var(--color-blue-soft)",
+  teal: "var(--color-teal)",
+  indigo: "var(--color-indigo)",
+  indigoSoft: "var(--color-indigo-soft)",
 };
-const DONUT_COLORS = ["#059669", "#2563EB", "#0D9488", "#4F46E5", "#94A3B8", "#CBD5E1"];
-const SHADOW = "0 1px 3px rgba(15,23,42,0.04), 0 1px 2px -1px rgba(15,23,42,0.03)";
-const SHADOW_HOVER = "0 12px 24px -8px rgba(5,150,105,0.18)";
+
+const DONUT_COLORS = [
+  "var(--donut-1)", "var(--donut-2)", "var(--donut-3)",
+  "var(--donut-4)", "var(--donut-5)", "var(--donut-6)",
+];
+
+const SHADOW = "var(--color-shadow)";
+const SHADOW_HOVER = "var(--color-shadow-hover)";
+
 const FONT_STACK =
   '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 const MONO_STACK = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace';
@@ -200,9 +205,6 @@ function useGa4<T>(endpoint: string, range: Range) {
         setError("Could not reach the GA4 endpoint.");
       })
       .finally(() => setIsFetching(false));
-    // Deliberately not clearing `data` here — keeping the previous chart on
-    // screen while a new range loads avoids re-mounting ResponsiveContainer,
-    // which caused a "narrow then widen" flash on earlier tab switches.
   }, [endpoint, range]);
 
   return { data, error, isFetching, clientMs };
@@ -268,27 +270,36 @@ function SegmentedControl<T extends string>({
   value,
   onChange,
   size = "md",
+  variant = "neutral",
 }: {
   options: readonly { value: T; label: ReactNode }[];
   value: T;
   onChange: (v: T) => void;
   size?: "sm" | "md";
+  variant?: "neutral" | "accent";
 }) {
   const pad = size === "sm" ? "px-3 py-1.5 text-xs" : "px-4 py-2 text-xs";
   return (
-    <div className="inline-flex p-1 rounded-2xl gap-0.5" style={{ background: "#E2E8F0B3" }}>
+    <div className="inline-flex p-1 rounded-2xl gap-0.5" style={{ background: COLORS.track }}>
       {options.map((o) => {
         const active = o.value === value;
+        const activeBg = variant === "accent" ? COLORS.accent : COLORS.surface;
+        const activeColor = variant === "accent" ? "#fff" : COLORS.ink;
+        const activeShadow =
+          variant === "accent"
+            ? "0 2px 10px -2px rgba(5,150,105,0.4)"
+            : "0 1px 2px rgba(15,23,42,0.06), 0 1px 6px rgba(15,23,42,0.05)";
+        const activeBorder = variant === "accent" ? "1px solid transparent" : `1px solid ${COLORS.line}`;
         return (
           <button
             key={o.value}
             onClick={() => onChange(o.value)}
             className={`rounded-xl font-semibold transition-all ${pad}`}
             style={{
-              color: active ? COLORS.ink : COLORS.inkSoft,
-              background: active ? COLORS.surface : "transparent",
-              boxShadow: active ? "0 1px 2px rgba(15,23,42,0.06), 0 1px 6px rgba(15,23,42,0.05)" : "none",
-              border: active ? `1px solid ${COLORS.line}` : "1px solid transparent",
+              color: active ? activeColor : COLORS.inkSoft,
+              background: active ? activeBg : "transparent",
+              boxShadow: active ? activeShadow : "none",
+              border: active ? activeBorder : "1px solid transparent",
             }}
           >
             {o.label}
@@ -315,7 +326,13 @@ function Card({
   return (
     <div
       className={`rounded-2xl p-5 transition-shadow duration-200 ${className}`}
-      style={{ background: COLORS.surface, border: `1px solid ${COLORS.line}`, boxShadow: SHADOW }}
+      style={{
+        background: COLORS.surface,
+        border: `1px solid ${COLORS.line}`,
+        boxShadow: SHADOW,
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
+      }}
     >
       <div className="flex items-center justify-between mb-4 gap-2">
         <div className="flex items-center gap-2 min-w-0">
@@ -414,13 +431,19 @@ function KpiCard({
     displayValue !== undefined
       ? displayValue
       : decimals > 0
-      ? animated.toFixed(decimals)
-      : Math.round(animated).toLocaleString();
+        ? animated.toFixed(decimals)
+        : Math.round(animated).toLocaleString();
 
   return (
     <div
       className="rounded-2xl p-5 transition-shadow duration-200 hover:shadow-lg"
-      style={{ background: COLORS.surface, border: `1px solid ${COLORS.line}`, boxShadow: SHADOW }}
+      style={{
+        background: COLORS.surface,
+        border: `1px solid ${COLORS.line}`,
+        boxShadow: SHADOW,
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
+      }}
     >
       <div className="flex items-center justify-between mb-3">
         <p className="text-[11px] font-bold uppercase tracking-wider truncate" style={{ color: COLORS.inkSoft }}>
@@ -470,13 +493,13 @@ function ChartTooltip({ active, payload, label }: any) {
   return (
     <div
       className="rounded-xl px-3 py-2 text-xs"
-      style={{ background: COLORS.ink, color: "#fff", boxShadow: SHADOW_HOVER }}
+      style={{ background: "#0F172A", color: "#fff", boxShadow: SHADOW_HOVER }}
     >
       <p className="mb-1" style={{ color: "#94A3B8" }}>
         {label}
       </p>
       {payload.map((p: any, i: number) => (
-        <p key={i} className="font-semibold" style={{ fontVariantNumeric: "tabular-nums" }}>
+        <p key={i} className="font-semibold" style={{ fontVariantNumeric: "tabular-nums", color: "#fff" }}>
           {typeof p.value === "number" ? p.value.toLocaleString() : p.value}
         </p>
       ))}
@@ -761,9 +784,11 @@ function SourcePanel({
       <div
         className="ob-ga4-card rounded-2xl p-4 hover:-translate-y-0.5"
         style={{
-          background: `linear-gradient(to bottom, #fff, ${COLORS.accentSoft}66)`,
-          border: `1px solid #A7F3D0`,
+          background: `linear-gradient(to bottom, ${COLORS.surface}, ${COLORS.accentSoft})`,
+          border: `1px solid var(--color-accent-border)`,
           boxShadow: SHADOW,
+          backdropFilter: "blur(14px)",
+          WebkitBackdropFilter: "blur(14px)",
         }}
       >
         <div className="flex items-center justify-between mb-2">
@@ -838,7 +863,12 @@ function SourcePanel({
       {/* ERP */}
       <div
         className="rounded-2xl p-4 opacity-80"
-        style={{ background: "#F8FAFC", border: `1px solid ${COLORS.line}` }}
+        style={{
+          background: COLORS.surface,
+          border: `1px solid ${COLORS.line}`,
+          backdropFilter: "blur(14px)",
+          WebkitBackdropFilter: "blur(14px)",
+        }}
       >
         <div className="flex items-center justify-between mb-2">
           <span className="font-bold text-xs uppercase tracking-wider" style={{ color: COLORS.inkSoft }}>
@@ -867,8 +897,6 @@ function SourcePanel({
 
 const GEO_URL = "/world-countries-110m.json";
 
-// Common mismatches between GA4's country names and the map's Natural Earth
-// names. Not exhaustive — most countries match directly.
 const COUNTRY_ALIASES: Record<string, string> = {
   "united states": "united states of america",
   russia: "russian federation",
@@ -878,9 +906,6 @@ const COUNTRY_ALIASES: Record<string, string> = {
   vietnam: "viet nam",
 };
 
-// Approximate [lon, lat] centroids for labeling countries that actually show
-// up in GA4 traffic data. Not exhaustive — covers common markets. Countries
-// without a listed centroid still get colored on the map, just no label pin.
 const COUNTRY_CENTROIDS: Record<string, [number, number]> = {
   canada: [-106.35, 56.13],
   "united states": [-95.71, 37.09],
@@ -948,7 +973,7 @@ function CountryChoropleth({ rows }: { rows: { country: string; activeUsers: num
   }
 
   function colorFor(value: number | null) {
-    if (value === null || max === 0) return "#E9EEF1";
+    if (value === null || max === 0) return "var(--color-map-empty)";
     const intensity = 0.28 + 0.72 * (value / max);
     return `rgba(5, 150, 105, ${intensity})`;
   }
@@ -957,8 +982,6 @@ function CountryChoropleth({ rows }: { rows: { country: string; activeUsers: num
     return <p className="text-sm" style={{ color: COLORS.inkFaint }}>No data in this range.</p>;
   }
 
-  // Label the top 5 countries by traffic that have a known centroid — a pill
-  // per country keeps it readable; more than ~5 and labels start to overlap.
   const MARKER_COLORS = [COLORS.accent, COLORS.blue, COLORS.indigo, COLORS.teal, "#B45309"];
   const labeled = [...rows]
     .sort((a, b) => b.activeUsers - a.activeUsers)
@@ -968,16 +991,20 @@ function CountryChoropleth({ rows }: { rows: { country: string; activeUsers: num
 
   return (
     <div style={{ position: "relative" }}>
-      <ComposableMap
-        projection="geoEqualEarth"
-        // Centered/zoomed toward North America rather than a full-world view —
-        // this dashboard's traffic is concentrated there, so a full globe just
-        // wastes space on oceans and continents with no data.
-        projectionConfig={{ scale: 240, center: [-95, 42] }}
-        width={800}
-        height={420}
-        style={{ width: "100%", height: "auto" }}
+      <div
+        style={{
+          background: "var(--color-map-canvas)",
+          borderRadius: 16,
+          padding: 12,
+        }}
       >
+        <ComposableMap
+          projection="geoEqualEarth"
+          projectionConfig={{ scale: 240, center: [-95, 42] }}
+          width={800}
+          height={420}
+          style={{ width: "100%", height: "auto" }}
+        >
         <Geographies geography={GEO_URL}>
           {({ geographies }: { geographies: any[] }) =>
             geographies.map((geo) => {
@@ -990,14 +1017,14 @@ function CountryChoropleth({ rows }: { rows: { country: string; activeUsers: num
                   onMouseEnter={() => value !== null && setHover({ name, value })}
                   onMouseLeave={() => setHover(null)}
                   style={{
-                    default: { fill: colorFor(value), stroke: "#fff", strokeWidth: 0.5, outline: "none" },
+                    default: { fill: colorFor(value), stroke: COLORS.surface, strokeWidth: 0.5, outline: "none" },
                     hover: {
                       fill: value !== null ? "#047857" : colorFor(value),
-                      stroke: "#fff",
+                      stroke: COLORS.surface,
                       strokeWidth: 0.5,
                       outline: "none",
                     },
-                    pressed: { fill: "#065F46", stroke: "#fff", strokeWidth: 0.5, outline: "none" },
+                    pressed: { fill: "#065F46", stroke: COLORS.surface, strokeWidth: 0.5, outline: "none" },
                   }}
                 />
               );
@@ -1005,19 +1032,10 @@ function CountryChoropleth({ rows }: { rows: { country: string; activeUsers: num
           }
         </Geographies>
 
-        {/* Pass 1: ping rings + solid dots for every labeled marker, drawn
-            before any pill. SVG paints later elements on top, so if pills
-            were interleaved per-marker, one country's pill could visually
-            cover a neighboring country's pulse ring. Two passes avoids that. */}
         {labeled.map((r, i) => {
           const dotColor = MARKER_COLORS[i % MARKER_COLORS.length];
           return (
             <Marker key={`dot-${r.country}`} coordinates={r.centroid}>
-              {/* Ping ring on every labeled marker — any country with real
-                  traffic shows as "live". Two layers: a white base so the
-                  ring stays visible even over a same-hue green landmass
-                  (previously invisible over Canada's dark-green fill), plus a
-                  colored outline on top for per-country identity. */}
               <circle
                 r={9}
                 fill="#fff"
@@ -1031,14 +1049,9 @@ function CountryChoropleth({ rows }: { rows: { country: string; activeUsers: num
           );
         })}
 
-        {/* Pass 2: the pill labels, always on top of every dot/ping. Sized
-            larger than desktop strictly needs, since this SVG scales down
-            to fit a phone-width card — text this size on a ~340px-wide
-            mobile container renders at roughly half these viewBox pixels. */}
         {labeled.map((r, i) => {
           const dotColor = MARKER_COLORS[i % MARKER_COLORS.length];
           const label = `${r.country} (${r.activeUsers.toLocaleString()})`;
-          // Rough monospace-independent width estimate so the pill fits the text.
           const pillWidth = label.length * 8 + 26;
           return (
             <Marker key={`pill-${r.country}`} coordinates={r.centroid}>
@@ -1050,7 +1063,7 @@ function CountryChoropleth({ rows }: { rows: { country: string; activeUsers: num
                   height={26}
                   rx={13}
                   ry={13}
-                  fill="#fff"
+                  className="ob-map-pill-bg"
                   stroke={dotColor}
                   strokeWidth={1.5}
                   style={{ filter: "drop-shadow(0 1px 2px rgba(15,23,42,0.15))" }}
@@ -1059,7 +1072,8 @@ function CountryChoropleth({ rows }: { rows: { country: string; activeUsers: num
                 <text
                   x={23}
                   y={18}
-                  style={{ fontSize: 14, fontWeight: 700, fill: COLORS.ink, fontFamily: FONT_STACK }}
+                  className="ob-map-pill-text"
+                  style={{ fontSize: 14, fontWeight: 700, fontFamily: FONT_STACK, ["--pill-color" as any]: dotColor }}
                 >
                   {label}
                 </text>
@@ -1068,6 +1082,7 @@ function CountryChoropleth({ rows }: { rows: { country: string; activeUsers: num
           );
         })}
       </ComposableMap>
+      </div>
       {hover && (
         <div
           className="text-xs font-semibold px-2.5 py-1 rounded-lg"
@@ -1075,7 +1090,7 @@ function CountryChoropleth({ rows }: { rows: { country: string; activeUsers: num
             position: "absolute",
             top: 8,
             left: 8,
-            background: COLORS.ink,
+            background: "#0F172A",
             color: "#fff",
             fontVariantNumeric: "tabular-nums",
           }}
@@ -1142,37 +1157,40 @@ function LiveInsightsCard({ input }: { input: InsightsInput | null }) {
     <div
       className="rounded-2xl p-5 flex flex-col justify-between"
       style={{
-        background: "linear-gradient(160deg, #1E293B, #334155)",
-        color: "#fff",
+        background: "var(--color-highlight-bg)",
+        color: "var(--color-highlight-text)",
+        border: "1px solid var(--color-highlight-border)",
         boxShadow: SHADOW,
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
       }}
     >
       <div>
         <div
           className="flex items-center justify-between pb-3 mb-3"
-          style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}
+          style={{ borderBottom: "1px solid var(--color-highlight-divider)" }}
         >
-          <div className="flex items-center gap-2 text-xs font-bold" style={{ color: "#34D399" }}>
+          <div className="flex items-center gap-2 text-xs font-bold" style={{ color: COLORS.accent }}>
             <Sparkles size={14} strokeWidth={2} />
             Live Insights
           </div>
           <span
             className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-            style={{ background: "rgba(255,255,255,0.08)", color: "#94A3B8" }}
+            style={{ background: "var(--color-highlight-btn-bg)", color: COLORS.accent }}
           >
             From live data
           </span>
         </div>
 
         {!input ? (
-          <p className="text-xs" style={{ color: "#94A3B8" }}>
+          <p className="text-xs" style={{ color: "var(--color-highlight-text-soft)" }}>
             Loading…
           </p>
         ) : (
-          <ul className="space-y-2.5 text-xs leading-relaxed" style={{ color: "#CBD5E1" }}>
+          <ul className="space-y-2.5 text-xs leading-relaxed" style={{ color: "var(--color-highlight-text-soft)" }}>
             {bullets.map((b, i) => (
               <li key={i} className="flex items-start gap-2">
-                <span style={{ color: "#34D399" }} className="font-bold">
+                <span style={{ color: COLORS.accent }} className="font-bold">
                   •
                 </span>
                 <span>{b}</span>
@@ -1187,7 +1205,7 @@ function LiveInsightsCard({ input }: { input: InsightsInput | null }) {
           onClick={copy}
           disabled={!input}
           className="flex-1 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition active:scale-95 disabled:opacity-50"
-          style={{ background: "rgba(255,255,255,0.08)", color: "#fff" }}
+          style={{ background: "var(--color-highlight-btn-bg)", color: "var(--color-highlight-text)" }}
         >
           {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />}
           {copied ? "Copied" : "Copy Insights"}
@@ -1426,18 +1444,10 @@ function FunnelVisualizer({
     { label: "Engaged sessions", value: funnel.engagedSessions, color: COLORS.teal },
   ];
   if (funnel.keyEvents !== null) {
-    // Reuses COLORS.inkFaint — the same grey the Traffic Source donut below
-    // uses for its smaller slices — instead of introducing a new color.
     steps.push({ label: "Key events", value: funnel.keyEvents, color: COLORS.inkFaint });
   }
   const max = steps[0]?.value || 1;
 
-  // Key events being exactly 0 usually means no GA4 event is marked as a
-  // "Key event" yet (Admin → Events), not that conversion genuinely failed —
-  // the query still succeeds and returns 0 either way, so we can't tell the
-  // two cases apart from the number alone. Rather than show a permanently
-  // uninformative "0.0% completion," fall back to engaged-session rate,
-  // which is always a real, non-zero signal, and say so plainly.
   const usingFallback = funnel.keyEvents === 0;
   const completionBasis = usingFallback ? funnel.engagedSessions : steps[steps.length - 1]?.value ?? 0;
   const completionRate = funnel.sessions > 0 ? (completionBasis / funnel.sessions) * 100 : 0;
@@ -1457,8 +1467,6 @@ function FunnelVisualizer({
     >
       <div className="space-y-3">
         {steps.map((s, i) => {
-          // No bar at all for a genuine zero — a minimum-width grey sliver
-          // reads as "some small amount happened" when actually nothing did.
           const pct = s.value === 0 ? 0 : Math.max(4, (s.value / max) * 100);
           return (
             <div key={s.label}>
@@ -1591,8 +1599,6 @@ function MarketingView({ range }: { range: Range }) {
           icon={PieChartIcon}
           rows={data.sources.map((s) => ({ label: s.source, value: s.sessions }))}
           valueLabel="sessions"
-          // 2nd slice is grey rather than teal, so it doesn't read as a second
-          // shade of green next to the top (accent) slice.
           colors={[COLORS.accent, COLORS.inkFaint, COLORS.blue, COLORS.indigo, COLORS.teal, "#CBD5E1"]}
         />
         <BarListChart
@@ -1704,8 +1710,7 @@ function OperationsView({
         </div>
       )}
 
-      {/* 3. Bottom — general page traffic on the left (moved here from
-          Marketing, since 404s are an operational signal), diagnostic
+      {/* 3. Bottom — general page traffic on the left, diagnostic
           route logs on the right, presented as routine monitoring data. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <BarListChart
@@ -1715,7 +1720,30 @@ function OperationsView({
           rows={(data.pages ?? []).map((p) => ({ label: p.title, value: p.views }))}
         />
 
-        <Card title="Diagnostic Route Logs" icon={FileWarning} badge={<span className="text-[11px] font-medium" style={{ color: COLORS.inkFaint }}>Live Endpoint Inspector</span>}>
+        <div
+          className="rounded-2xl p-5 transition-shadow duration-200"
+          style={{
+            background: COLORS.surface,
+            border: `1px solid ${COLORS.line}`,
+            boxShadow: SHADOW,
+            backdropFilter: "blur(14px)",
+            WebkitBackdropFilter: "blur(14px)",
+          }}
+        >
+          <div className="flex items-center justify-between mb-4 gap-2">
+            <div
+              className="flex items-center gap-2 min-w-0 px-2.5 py-1 rounded-lg"
+              style={{ background: COLORS.amberSoft, border: `1px solid rgba(245,158,11,0.35)` }}
+            >
+              <FileWarning size={14} strokeWidth={2} color={COLORS.amberInk} />
+              <p className="text-[11px] font-bold uppercase tracking-wider truncate" style={{ color: COLORS.amberInk }}>
+                Diagnostic Route Logs
+              </p>
+            </div>
+            <span className="text-[11px] font-medium" style={{ color: COLORS.accent }}>
+              Live Endpoint Inspector
+            </span>
+          </div>
           {data.notFoundPages.length === 0 ? (
             <p className="text-sm" style={{ color: COLORS.inkFaint }}>
               No route issues detected in the {rangeLabel(range)}.
@@ -1738,7 +1766,7 @@ function OperationsView({
                         HTTP 404
                       </span>
                       <span
-                        className="truncate text-sm font-medium"
+                        className="truncate text-xs font-medium"
                         style={{ color: COLORS.ink, fontFamily: MONO_STACK }}
                       >
                         {p.title}
@@ -1766,7 +1794,7 @@ function OperationsView({
               })}
             </div>
           )}
-        </Card>
+        </div>
       </div>
     </div>
   );
@@ -1793,6 +1821,25 @@ export default function Home() {
     operations?: OperationsData;
   }>({});
   const [lastMs, setLastMs] = useState<number | undefined>(undefined);
+
+  const [isDark, setIsDark] = useState(true);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('oneboard-theme');
+    const dark = saved !== 'light';
+    setIsDark(dark);
+    document.documentElement.classList.toggle('dark', dark);
+  }, []);
+
+  const toggleTheme = () => {
+    setIsDark((prev) => {
+      const next = !prev;
+      document.documentElement.classList.toggle('dark', next);
+      localStorage.setItem('oneboard-theme', next ? 'dark' : 'light');
+      return next;
+    });
+  };
+
 
   function handleExecutiveData(data: ExecutiveData, ms?: number) {
     setLatestData((prev) => ({ ...prev, executive: data }));
@@ -1908,6 +1955,18 @@ export default function Home() {
         .ob-live-dot {
           animation: ob-live-dot 1.6s ease-in-out infinite;
         }
+        .ob-map-pill-bg {
+          fill: #ffffff;
+        }
+        .dark .ob-map-pill-bg {
+          fill: rgba(15, 23, 42, 0.92);
+        }
+        .ob-map-pill-text {
+          fill: #0F172A;
+        }
+        .dark .ob-map-pill-text {
+          fill: var(--pill-color, #10B981);
+        }
         @media (prefers-reduced-motion: reduce) {
           .ob-fade-in, .ob-skeleton, .animate-pulse, .ob-geo-ping, .ob-live-dot { animation: none !important; }
         }
@@ -1935,20 +1994,34 @@ export default function Home() {
                 </span>
               </div>
               <p className="text-xs font-medium mt-0.5" style={{ color: COLORS.inkSoft }}>
-                Auto-Dashboard Engine · Live GA4 Web Telemetry API + Excel Baseline Blending
+                Live GA4 Web Telemetry API + Excel Baseline Blending
               </p>
             </div>
           </div>
 
+          <button
+            onClick={toggleTheme}
+            style={{
+              background: COLORS.accentSoft,
+              color: COLORS.accent,
+              border: "1px solid transparent",
+            }}
+            className="ob-header-btn px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+          >
+            {isDark ? <Sun size={13} /> : <Moon size={13} />}
+            {isDark ? 'Light' : 'Dark'}
+          </button>
+
           <div className="flex flex-wrap items-center gap-2.5">
             <div
+
               className="flex items-center gap-2 text-xs font-medium px-3.5 py-2 rounded-xl"
               style={{ background: COLORS.surface, border: `1px solid ${COLORS.line}`, boxShadow: SHADOW, fontFamily: MONO_STACK }}
               title="Round-trip time for the most recently loaded GA4 API response"
             >
               <span className="w-1.5 h-1.5 rounded-full ob-live-dot" style={{ background: COLORS.up }} />
               <Zap size={13} style={{ color: "#F59E0B" }} />
-              <span style={{ color: COLORS.inkSoft }}>{lastMs !== undefined ? `${lastMs}ms` : "…"}</span>
+              <span style={{ color: COLORS.up, fontWeight: 700 }}>{lastMs !== undefined ? `${lastMs}ms` : "…"}</span>
             </div>
 
             <button
@@ -1994,9 +2067,10 @@ export default function Home() {
               }))}
               value={tab}
               onChange={setTab}
+              variant="accent"
             />
           </div>
-          <SegmentedControl options={RANGES} value={range} onChange={setRange} size="sm" />
+          <SegmentedControl options={RANGES} value={range} onChange={setRange} size="sm" variant="accent" />
         </div>
 
         <div className={tab === "Executive" ? "ob-fade-in" : "hidden"}>
