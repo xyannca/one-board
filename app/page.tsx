@@ -2082,6 +2082,14 @@ export default function Home() {
         <div className={tab === "Operations" ? "ob-fade-in" : "hidden"}>
           <OperationsView range={range} onData={handleOperationsData} />
         </div>
+
+        <div
+          className="mt-6 pt-4 flex flex-wrap items-center justify-between gap-2 text-[8px]"
+          style={{ borderTop: `1px solid ${COLORS.line}`, color: COLORS.inkFaint }}
+        >
+          <span>OneBoard · Built with Next.js, TypeScript &amp; the GA4 Data API</span>
+          <span>Created Aug 08, 2026</span>
+        </div>
       </main>
 
       {showPayload && <RawPayloadModal payload={payload} onClose={() => setShowPayload(false)} />}
