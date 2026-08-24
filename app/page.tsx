@@ -2,6 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode, ComponentType } from "react";
+import { detectAnomalies, detectSustainedTrend } from "./api/ai-narrative/_lib/anomalies";
+import type { AiNarrativeFact, AiAnomaly, AiNarrativeResult } from "../types/ai-narrative";
+import type { BriefingData, BriefingFact, BriefingRisk, Status } from "../components/ExecutiveBriefingPDF";
+import * as XLSX from "xlsx";
 import {
   ResponsiveContainer,
   AreaChart,
@@ -57,8 +61,12 @@ import {
   X,
   Lock,
   Upload,
+  UserMinus,
+  GraduationCap,
+  UserPlus,
   Sun,
   Moon,
+  Loader2,
 } from "lucide-react";
 
 /* ============== Data shapes ============== */
@@ -101,14 +109,41 @@ type OperationsData = {
   queryMs?: number;
 };
 
-const TABS = ["Executive", "Marketing", "Operations"] as const;
+type HRFact = {
+  id: string;
+  metric: string;
+  value: number | string;
+  unit?: string;
+  delta?: { value: number; direction: "up" | "down"; period: string };
+  context?: string;
+};
+
+type HRData = {
+  source: "sample";
+  meta: { label: string; generatedAt: string; note: string };
+  facts: HRFact[];
+  monthlySnapshot: {
+    month: string;
+    headcount: number;
+    hires: number;
+    terminations: number;
+    attritionRate: number;
+    complianceRate: number;
+  }[];
+  companyTargets: { attritionTargetMax: number; complianceTargetMin: number };
+  queryMs?: number;
+};
+
+
+const TABS = ["Executive", "Marketing", "Operations", "HR"] as const;
 type Tab = (typeof TABS)[number];
 const TAB_LABELS: Record<Tab, string> = {
   Executive: "Executive View",
   Marketing: "Marketing & Funnel",
   Operations: "Operations & Diagnostics",
+  HR: "HR View"
 };
-
+  
 const RANGES = [
   { value: "7d", label: "7 Days" },
   { value: "30d", label: "30 Days" },
@@ -765,27 +800,36 @@ type ExcelState = {
   filename: string | null;
   rows: number | null;
   source: "upload" | "demo" | null;
+  data: Record<string, unknown>[] | null;
 };
 
 function SourcePanel({
   activeEndpoint,
   excel,
   onExcelFileSelect,
+  hrActive,
 }: {
   activeEndpoint: string;
   excel: ExcelState;
   onExcelFileSelect: (file: File) => void;
+  hrActive: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  // Border highlight only indicates which source the CURRENT tab is
+  // reading from. It does not imply the other source is broken or
+  // unavailable — GA4 stays fully "live" in its own copy for the other
+  // three tabs regardless of which tab is active right now.
+  const excelBorderActive = hrActive || excel.connected;
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-      {/* GA4 */}
+      {/* GA4 — content never changes with tab; only the border highlight
+          toggles off when this tab isn't reading from it. */}
       <div
         className="ob-ga4-card rounded-2xl p-4 hover:-translate-y-0.5"
         style={{
           background: `linear-gradient(to bottom, ${COLORS.surface}, ${COLORS.accentSoft})`,
-          border: `1px solid var(--color-accent-border)`,
+          border: hrActive ? `1px solid ${COLORS.line}` : `1px solid var(--color-accent-border)`,
           boxShadow: SHADOW,
           backdropFilter: "blur(14px)",
           WebkitBackdropFilter: "blur(14px)",
@@ -812,11 +856,21 @@ function SourcePanel({
         </div>
       </div>
 
-      {/* Excel / CSV — real file picker, green hover state to match GA4's active look */}
+      {/* Excel / CSV — border highlights on HR tab (same data-source
+          category) or when the person has actually uploaded a file.
+          Text content reflects the REAL upload state only — it never
+          claims a sample dataset is "connected" via upload. */}
       <div
         onClick={() => inputRef.current?.click()}
         className="ob-excel-card rounded-2xl p-4 cursor-pointer hover:-translate-y-0.5"
-        style={{ background: COLORS.surface, border: `1px solid ${COLORS.line}`, boxShadow: SHADOW }}
+        style={{
+          background: excelBorderActive
+            ? `linear-gradient(to bottom, ${COLORS.surface}, ${COLORS.accentSoft})`
+            : COLORS.surface,
+          border: excelBorderActive ? `1.5px solid ${COLORS.accent}` : `1px solid ${COLORS.line}`,
+          boxShadow: excelBorderActive ? `0 0 0 3px ${COLORS.accentSoft}, ${SHADOW}` : SHADOW,
+          transition: "border-color 200ms ease, box-shadow 200ms ease",
+        }}
       >
         <input
           ref={inputRef}
@@ -847,7 +901,7 @@ function SourcePanel({
         </p>
         <div
           className="ob-excel-cta mt-3 text-[11px] font-semibold flex items-center gap-1.5"
-          style={{ color: excel.connected ? COLORS.accent : COLORS.inkFaint }}
+          style={{ color: excelBorderActive ? COLORS.accent : COLORS.inkFaint }}
         >
           <Upload size={13} />
           <span>
@@ -892,6 +946,8 @@ function SourcePanel({
     </div>
   );
 }
+
+
 
 /* ============== Country choropleth (real react-simple-maps + real GA4 data) ============== */
 
@@ -1139,7 +1195,22 @@ function buildInsightBullets(input: InsightsInput): string[] {
   return bullets.slice(0, 3);
 }
 
-function LiveInsightsCard({ input }: { input: InsightsInput | null }) {
+function LiveInsightsCard({
+  input,
+  facts,
+  anomalies,
+  context,
+  result,
+  onGenerated,
+}: {
+  input: InsightsInput | null;
+  facts: AiNarrativeFact[];
+  anomalies?: AiAnomaly[];
+  context?: Record<string, number | string>;
+  result: AiNarrativeResult | undefined;
+  onGenerated: (result: AiNarrativeResult) => void;
+}) {
+
   const [copied, setCopied] = useState(false);
   const bullets = input ? buildInsightBullets(input) : [];
 
@@ -1171,7 +1242,7 @@ function LiveInsightsCard({ input }: { input: InsightsInput | null }) {
           style={{ borderBottom: "1px solid var(--color-highlight-divider)" }}
         >
           <div className="flex items-center gap-2 text-xs font-bold" style={{ color: COLORS.accent }}>
-            <Sparkles size={14} strokeWidth={2} />
+            <Sparkles size={14} strokeWidth={2} color="#F59E0B" />
             Live Insights
           </div>
           <span
@@ -1180,6 +1251,7 @@ function LiveInsightsCard({ input }: { input: InsightsInput | null }) {
           >
             From live data
           </span>
+
         </div>
 
         {!input ? (
@@ -1210,6 +1282,170 @@ function LiveInsightsCard({ input }: { input: InsightsInput | null }) {
           {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />}
           {copied ? "Copied" : "Copy Insights"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+function AiNarrativeCard({
+  facts,
+  anomalies,
+  context,
+  result,
+  onGenerated,
+}: {
+  facts: AiNarrativeFact[];
+  anomalies?: AiAnomaly[];
+  context?: Record<string, number | string>;
+  result: AiNarrativeResult | undefined;
+  onGenerated: (result: AiNarrativeResult) => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function generate() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/ai-narrative", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ facts, anomalies: anomalies ?? [], context: context ?? null }),
+      });
+      const json = await res.json();
+      if (json.error) {
+        setError(json.error);
+      } else {
+        onGenerated(json);
+      }
+    } catch {
+      setError("Could not reach the AI narrative endpoint.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function copy() {
+    if (!result) return;
+    const parts = [
+      result.overview,
+      ...result.keyObservations,
+      ...result.alerts.map((a) => `Alert: ${a.label} — ${a.detail}`),
+      ...result.recommendations.map((r) => `Recommendation: ${r}`),
+    ];
+    navigator.clipboard.writeText(parts.join("\n"));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <div
+      className="rounded-2xl p-5 flex flex-col justify-between"
+      style={{
+        background: COLORS.surface,
+        border: `1px solid ${COLORS.indigo}`,
+        boxShadow: SHADOW,
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
+      }}
+    >
+      <div>
+        <div
+          className="flex items-center justify-between pb-3 mb-3"
+          style={{ borderBottom: `1px solid ${COLORS.line}` }}
+        >
+          <div className="flex items-center gap-2 text-xs font-bold" style={{ color: COLORS.indigo }}>
+            <Sparkles size={14} strokeWidth={2} color="#059669" className="ob-sparkle-twinkle" />
+            AI Narrative
+          </div>
+          <span
+            className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+            style={{ background: COLORS.indigoSoft, color: COLORS.indigo }}
+          >
+            LLM Engine
+          </span>
+        </div>
+
+        {error && (
+          <p className="text-xs mb-2" style={{ color: COLORS.down }}>
+            {error}
+          </p>
+        )}
+
+        <div>
+          {result ? (
+            <div className="space-y-3">
+              <p className="text-xs leading-relaxed" style={{ color: COLORS.inkSoft }}>
+                {result.overview}
+              </p>
+
+              {result.keyObservations.length > 0 && (
+                <ul className="space-y-1.5 text-xs leading-relaxed" style={{ color: COLORS.inkSoft }}>
+                  {result.keyObservations.map((o, i) => (
+                    <li key={i} className="flex items-start gap-2">
+                      <span style={{ color: COLORS.indigo }} className="font-bold">•</span>
+                      <span>{o}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {result.alerts.length > 0 && (
+                <div className="pt-2" style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                  <p className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color: COLORS.amberInk }}>
+                    Watch Items
+                  </p>
+                  {result.alerts.map((a, i) => (
+                    <p key={i} className="text-xs leading-relaxed mb-1" style={{ color: COLORS.inkSoft }}>
+                      <span style={{ fontWeight: 700 }}>{a.label}:</span> {a.detail}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              {result.recommendations.length > 0 && (
+                <div className="pt-2" style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                  <p className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color: COLORS.indigo }}>
+                    Suggested Next Steps
+                  </p>
+                  {result.recommendations.map((r, i) => (
+                    <p key={i} className="text-xs leading-relaxed mb-1" style={{ color: COLORS.inkSoft }}>
+                      {r}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs" style={{ color: COLORS.inkFaint }}>
+              Synthesizes the metrics already shown above into a structured summary — no new
+              data, generated only when you click below.
+            </p>
+          )}
+        </div>
+        
+      </div>
+
+      <div className="flex gap-2 mt-4">
+        <button
+          onClick={generate}
+          disabled={loading}
+          className="flex-1 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition active:scale-95 disabled:opacity-60"
+          style={{ background: COLORS.indigoSoft, color: COLORS.indigo }}
+        >
+          <Sparkles size={13} color="#059669" className="ob-sparkle-twinkle" />
+          {loading ? "Generating…" : result ? "Regenerate" : "Generate AI Summary"}
+        </button>
+        {result && (
+          <button
+            onClick={copy}
+            className="py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition active:scale-95"
+            style={{ background: COLORS.track, color: COLORS.inkSoft }}
+          >
+            {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1256,10 +1492,21 @@ function NewVsReturningBar({ data }: { data: { segment: string; activeUsers: num
 function ExecutiveView({
   range,
   onData,
+  onNarrative,
+  narrative,
+  marketingData,
+  operationsData,
+  hrData,
 }: {
   range: Range;
   onData?: (data: ExecutiveData, clientMs?: number) => void;
+  onNarrative?: (result: AiNarrativeResult) => void;
+  narrative?: AiNarrativeResult;
+  marketingData?: MarketingData;
+  operationsData?: OperationsData;
+  hrData?: HRData;
 }) {
+
   const { data, error, isFetching, clientMs } = useGa4<ExecutiveData>("/api/ga4/executive", range);
 
   useEffect(() => {
@@ -1280,7 +1527,15 @@ function ExecutiveView({
 
   const totalGeoUsers = (data.geoCountries ?? []).reduce((s, c) => s + c.activeUsers, 0);
 
+  // Cross-department facts for the Executive AI Narrative — Option B:
+  // KPI cards above stay untouched, only the AI's input gets richer.
+  const executiveFacts = executiveCrossDeptFacts(data, range, marketingData, operationsData, hrData);
+  const { anomalies: executiveAnomalies, context: executiveContext } = hrData
+    ? hrAnomaliesAndContext(hrData)
+    : { anomalies: [] as AiAnomaly[], context: undefined as Record<string, number | string> | undefined };
+
   return (
+    
     <div>
       <RefreshingNote show={isFetching} />
 
@@ -1325,12 +1580,11 @@ function ExecutiveView({
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+      <div id="ob-chart-executive" className="mb-4">
         <Card
           title={`Live Sessions Trend · ${rangeLabel(range)}`}
           icon={TrendingUp}
           badge={activeUsersDelta !== null ? <DeltaBadge value={activeUsersDelta} /> : undefined}
-          className="lg:col-span-2"
         >
           <ResponsiveContainer width="100%" height={220}>
             <AreaChart data={trend} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
@@ -1363,22 +1617,6 @@ function ExecutiveView({
             </AreaChart>
           </ResponsiveContainer>
         </Card>
-
-        <LiveInsightsCard
-          input={{
-            range: rangeLabel(range),
-            activeUsers: data.summary.activeUsers,
-            sessions: data.summary.sessions,
-            engagementRate: data.summary.engagementRate,
-            topChannel: data.summary.topChannel,
-            topChannelSharePct: topChannelShare,
-            topCountry: data.geoCountries?.[0]?.country ?? null,
-            topCountrySharePct:
-              data.geoCountries && data.geoCountries.length > 0 && totalGeoUsers > 0
-                ? (data.geoCountries[0].activeUsers / totalGeoUsers) * 100
-                : null,
-          }}
-        />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
@@ -1414,8 +1652,8 @@ function ExecutiveView({
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card title="Geographical Telemetry Map" icon={Globe2} className="lg:col-span-2">
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <Card title="Geographical Telemetry Map" icon={Globe2} className="lg:col-span-3">
           <CountryChoropleth rows={data.geoCountries ?? []} />
         </Card>
 
@@ -1424,6 +1662,17 @@ function ExecutiveView({
           icon={MapPin}
           rows={(data.geoCities ?? []).map((g) => ({ label: g.city, value: g.activeUsers }))}
           barColor={COLORS.accent}
+          className="lg:col-span-2"
+        />
+      </div>
+
+      <div className="mt-4">
+        <AiNarrativeCard
+          facts={executiveFacts}
+          anomalies={executiveAnomalies}
+          context={executiveContext}
+          result={narrative}
+          onGenerated={(result) => onNarrative?.(result)}
         />
       </div>
     </div>
@@ -1524,8 +1773,23 @@ function ChannelRadar({ channels }: { channels: { channel: string; sessions: num
   );
 }
 
-function MarketingView({ range }: { range: Range }) {
-  const { data, error, isFetching } = useGa4<MarketingData>("/api/ga4/marketing", range);
+function MarketingView({
+  range,
+  onData,
+  onNarrative,
+  narrative,
+}: {
+  range: Range;
+  onData?: (data: MarketingData, clientMs?: number) => void;
+  onNarrative?: (result: AiNarrativeResult) => void;
+  narrative?: AiNarrativeResult;
+}) {
+  const { data, error, isFetching, clientMs } = useGa4<MarketingData>("/api/ga4/marketing", range);
+
+  useEffect(() => {
+    if (data) onData?.(data, clientMs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   if (error) return <ErrorBox message={error} />;
   if (!data) return <MarketingSkeleton />;
@@ -1579,7 +1843,7 @@ function MarketingView({ range }: { range: Range }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
-        <div className="lg:col-span-2">
+        <div id="ob-chart-marketing"className="lg:col-span-2">
           {data.funnel ? (
             <FunnelVisualizer funnel={data.funnel} range={range} />
           ) : (
@@ -1608,19 +1872,41 @@ function MarketingView({ range }: { range: Range }) {
           rows={data.landingPages.map((p) => ({ label: p.page, value: p.sessions }))}
         />
       </div>
+
+      <div className="mt-4">
+        {(() => {
+          const { anomalies, context } = marketingAnomaliesAndContext(data);
+          return (
+            <AiNarrativeCard
+              facts={marketingToBriefing(data, range).kpis}
+              anomalies={anomalies}
+              context={context}
+              result={narrative}
+              onGenerated={(result) => onNarrative?.(result)}
+            />
+          );
+        })()}
+      </div>
     </div>
   );
 }
+
+
 
 /* ============== Operations ============== */
 
 function OperationsView({
   range,
   onData,
+  onNarrative,
+  narrative,
 }: {
   range: Range;
   onData?: (data: OperationsData, clientMs?: number) => void;
+  onNarrative?: (result: AiNarrativeResult) => void;
+  narrative?: AiNarrativeResult;
 }) {
+
   const { data, error, isFetching, clientMs } = useGa4<OperationsData>("/api/ga4/operations", range);
 
   useEffect(() => {
@@ -1694,7 +1980,9 @@ function OperationsView({
       {/* 2. Middle — device / browser / OS breakdown charts */}
       {hasDeviceCharts && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
-          <ShareDonut title={`Device Category · ${rangeLabel(range)}`} icon={Smartphone} rows={deviceRows} />
+          <div id="ob-chart-operations">
+            <ShareDonut title={`Device Category · ${rangeLabel(range)}`} icon={Smartphone} rows={deviceRows} />
+          </div>
           <BarListChart
             title={`Browser Matrix · ${rangeLabel(range)}`}
             icon={Layers}
@@ -1796,9 +2084,733 @@ function OperationsView({
           )}
         </div>
       </div>
+      <div className="mt-4">
+        <AiNarrativeCard
+          facts={operationsToBriefing(data, range).kpis}
+          anomalies={operationsAnomalies(data)}
+          result={narrative}
+          onGenerated={(result) => onNarrative?.(result)}
+        />
+      </div>
     </div>
   );
 }
+
+function monthLabel(m: string) {
+  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const mo = Number(m.split("-")[1]);
+  return names[mo - 1] ?? m;
+}
+
+function hrFactVisual(id: string): { icon: IconType; color: string; bg: string } {
+  if (id === "headcount") return { icon: Users, color: COLORS.accent, bg: COLORS.accentSoft };
+  if (id === "attrition") return { icon: UserMinus, color: COLORS.down, bg: COLORS.downSoft };
+  if (id === "compliance") return { icon: GraduationCap, color: COLORS.blue, bg: COLORS.blueSoft };
+  return { icon: UserPlus, color: COLORS.indigo, bg: COLORS.indigoSoft };
+}
+
+function HrFactCard({ fact }: { fact: HRFact }) {
+  const { icon: Icon, color, bg } = hrFactVisual(fact.id);
+  // attrition/compliance deltas are stored as percentage-point (pp)
+  // differences, not relative percent change — see hrFacts.ts for why.
+  const isRateMetric = fact.id === "attrition" || fact.id === "compliance";
+
+  // "up" isn't always good: rising attrition is bad, rising compliance is
+  // good. Flag metrics where a rise should read as a warning, not progress —
+  // same inversion concept as the DeltaBadge component's `invert` prop used
+  // elsewhere in this file (e.g. bounce rate).
+  const invertGoodDirection = fact.id === "attrition";
+  const isFlat = fact.delta ? fact.delta.value === 0 : false;
+  const isUp = fact.delta?.direction === "up";
+  const isGood = isFlat ? null : invertGoodDirection ? !isUp : isUp;
+  const deltaColor = isFlat ? COLORS.inkFaint : isGood ? COLORS.up : COLORS.teal;
+  const deltaArrow = isFlat ? "" : isUp ? "▲" : "▼";
+  const deltaLabel = fact.delta
+    ? `${deltaArrow}${deltaArrow ? " " : ""}${fact.delta.value}${isRateMetric ? "pp" : "%"} MoM`
+    : null;
+
+  return (
+    <div
+      className="rounded-2xl p-5 transition-shadow duration-200 hover:shadow-lg"
+      style={{
+        background: COLORS.surface,
+        border: `1px solid ${COLORS.line}`,
+        boxShadow: SHADOW,
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
+      }}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-[11px] font-bold uppercase tracking-wider truncate" style={{ color: COLORS.inkSoft }}>
+          {fact.metric}
+        </p>
+        <div className="w-6 h-6 rounded-full flex items-center justify-center shrink-0" style={{ background: bg }}>
+          <Icon size={13} strokeWidth={2.25} color={color} />
+        </div>
+      </div>
+
+      <p
+        className="font-extrabold leading-none truncate"
+        style={{ color: COLORS.ink, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em", fontSize: 30 }}
+      >
+        {fact.value}
+        {fact.unit ?? ""}
+      </p>
+
+      <div className="mt-2 h-5 flex items-center">
+        {deltaLabel ? (
+          <span className="text-xs font-semibold" style={{ color: deltaColor }}>
+            {deltaLabel}
+          </span>
+        ) : fact.context ? (
+          <span className="text-xs truncate font-medium" style={{ color: COLORS.inkFaint }}>
+            {fact.context}
+          </span>
+        ) : null}
+      </div>
+      {deltaLabel && fact.context && (
+        <p className="text-[11px] mt-1 truncate" style={{ color: COLORS.inkFaint }}>
+          {fact.context}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function HrTrendChart({ snapshot }: { snapshot: HRData["monthlySnapshot"] }) {
+  const chartData = snapshot.map((m) => ({
+    label: monthLabel(m.month),
+    attritionRate: m.attritionRate,
+    complianceRate: m.complianceRate,
+  }));
+  return (
+    <Card title="Attrition & Compliance Trend · Trailing 12 Months" icon={TrendingUp}>
+      <ResponsiveContainer width="100%" height={220}>
+        <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 4 }}>
+          <CartesianGrid stroke={COLORS.line} vertical={false} strokeDasharray="3 3" />
+          <XAxis dataKey="label" fontSize={11} stroke={COLORS.inkFaint} tickLine={false} axisLine={false} />
+          <YAxis
+            yAxisId="attrition"
+            fontSize={11}
+            stroke={COLORS.teal}
+            tickLine={false}
+            axisLine={false}
+            width={44}
+            tickFormatter={(v) => `${v}%`}
+          />
+          <YAxis
+            yAxisId="compliance"
+            orientation="right"
+            fontSize={11}
+            stroke={COLORS.blue}
+            tickLine={false}
+            axisLine={false}
+            width={50}
+            domain={['dataMin - 2', 'dataMax + 2']}
+            tickFormatter={(v) => `${v}%`}
+          />
+          <Tooltip content={<ChartTooltip />} />
+          <Line
+            yAxisId="attrition"
+            type="monotone"
+            dataKey="attritionRate"
+            name="Attrition %"
+            stroke={COLORS.teal}
+            strokeWidth={2}
+            dot={false}
+          />
+          <Line
+            yAxisId="compliance"
+            type="monotone"
+            dataKey="complianceRate"
+            name="Compliance %"
+            stroke={COLORS.blue}
+            strokeWidth={2}
+            dot={false}
+          />
+          <Legend
+            iconType="circle"
+            iconSize={7}
+            formatter={(value) => (
+              <span className="text-xs font-medium" style={{ color: COLORS.inkSoft }}>
+                {value}
+              </span>
+            )}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </Card>
+  );
+}
+
+function HrHeadcountChart({ snapshot }: { snapshot: HRData["monthlySnapshot"] }) {
+  const chartData = snapshot.map((m) => ({
+    label: monthLabel(m.month),
+    hires: m.hires,
+    terminations: m.terminations,
+  }));
+  return (
+    <Card title="Hires vs. Terminations · Trailing 12 Months" icon={Users}>
+      <ResponsiveContainer width="100%" height={220}>
+        <BarChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
+          <CartesianGrid stroke={COLORS.line} vertical={false} strokeDasharray="3 3" />
+          <XAxis dataKey="label" fontSize={11} stroke={COLORS.inkFaint} tickLine={false} axisLine={false} />
+          <YAxis fontSize={11} stroke={COLORS.inkFaint} tickLine={false} axisLine={false} allowDecimals={false} />
+          <Tooltip content={<ChartTooltip />} />
+          <Bar dataKey="hires" name="New Hires" fill={COLORS.accent} radius={[6, 6, 0, 0]} barSize={10}  />
+          <Bar dataKey="terminations" name="Terminations" fill="#94A3B8" radius={[6, 6, 0, 0]} barSize={10} />
+          <Legend
+            iconType="circle"
+            iconSize={7}
+            formatter={(value) => (
+              <span className="text-xs font-medium" style={{ color: COLORS.inkSoft }}>
+                {value}
+              </span>
+            )}
+          />
+        </BarChart>
+      </ResponsiveContainer>
+    </Card>
+  );
+}
+
+function HRSkeleton() {
+  return (
+    <div>
+      <SkeletonKpiRow count={4} />
+      <SkeletonChartGrid count={2} />
+    </div>
+  );
+}
+
+function HRView({
+  onData,
+  onNarrative,
+  narrative,
+}: {
+  onData?: (data: HRData) => void;
+  onNarrative?: (result: AiNarrativeResult) => void;
+  narrative?: AiNarrativeResult;
+}) {
+
+  const { data, error, isFetching } = useGa4<HRData>("/api/hr", "30d");
+
+  useEffect(() => {
+    if (data) onData?.(data);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  if (error) return <ErrorBox message={error} />;
+  if (!data) return <HRSkeleton />;
+
+  return (
+    <div>
+      <RefreshingNote show={isFetching} />
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        {data.facts.map((f) => (
+          <HrFactCard key={f.id} fact={f} />
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <div id="ob-chart-hr">
+          <HrTrendChart snapshot={data.monthlySnapshot} />
+        </div>
+        <HrHeadcountChart snapshot={data.monthlySnapshot} />
+      </div>
+
+      {(() => {
+  const { anomalies, context } = hrAnomaliesAndContext(data);
+  return (
+    <AiNarrativeCard
+      facts={hrToBriefing(data, "30d").kpis}
+      anomalies={anomalies}
+      context={context}
+      result={narrative}
+      onGenerated={(result) => onNarrative?.(result)}
+    />
+  );
+})()}
+
+    </div>
+  );
+}
+
+/* ============== Export Briefing adapters ============== */
+// Each function turns one tab's already-displayed data into the
+// BriefingData shape ExecutiveBriefingPDF expects. Narrative text here is
+// built from the same rule-based logic already on screen (buildInsightBullets
+// for Executive, plain sentences for the others) — no new numbers, no AI
+// call yet. This keeps the exported PDF honest: everything in it was
+// already visible in the dashboard before export.
+
+function deltaFromPercent(pct: number | null | undefined, period: string): BriefingFact["delta"] {
+  if (pct === null || pct === undefined || !Number.isFinite(pct)) return undefined;
+  const direction: "up" | "down" = pct >= 0 ? "up" : "down";
+  return { direction, label: `${Math.abs(pct).toFixed(1)}% ${period}` };
+}
+
+function executiveToBriefing(data: ExecutiveData, range: Range): BriefingData {
+  const totalChannelSessions = data.channels.reduce((s, c) => s + c.sessions, 0);
+  const topChannelShare =
+    totalChannelSessions > 0 ? ((data.channels[0]?.sessions ?? 0) / totalChannelSessions) * 100 : null;
+  const totalGeoUsers = (data.geoCountries ?? []).reduce((s, c) => s + c.activeUsers, 0);
+  const topCountryShare =
+    data.geoCountries && data.geoCountries.length > 0 && totalGeoUsers > 0
+      ? (data.geoCountries[0].activeUsers / totalGeoUsers) * 100
+      : null;
+
+  const bullets = buildInsightBullets({
+    range: rangeLabel(range),
+    activeUsers: data.summary.activeUsers,
+    sessions: data.summary.sessions,
+    engagementRate: data.summary.engagementRate,
+    topChannel: data.summary.topChannel,
+    topChannelSharePct: topChannelShare,
+    topCountry: data.geoCountries?.[0]?.country ?? null,
+    topCountrySharePct: topCountryShare,
+  });
+
+  return {
+    reportTitle: "OneBoard Executive Briefing",
+    sectionLabel: "Executive View",
+    dataSource: "GA4 Live",
+    period: rangeLabel(range),
+    generatedAt: new Date().toLocaleString(),
+    kpis: [
+      {
+        id: "active_users",
+        metric: "Active Users",
+        value: data.summary.activeUsers,
+        delta: deltaFromPercent(data.deltas?.activeUsers, "vs prior period"),
+      },
+      {
+        id: "sessions",
+        metric: "Sessions",
+        value: data.summary.sessions,
+        delta: deltaFromPercent(data.deltas?.sessions, "vs prior period"),
+      },
+      {
+        id: "engagement_rate",
+        metric: "Engagement Rate",
+        value: Math.round(data.summary.engagementRate * 100),
+        unit: "%",
+      },
+      {
+        id: "top_channel",
+        metric: "Top Channel",
+        value: data.summary.topChannel,
+        note: topChannelShare !== null ? `${topChannelShare.toFixed(0)}% traffic share` : undefined,
+      },
+    ],
+    narrative: bullets.join(" "),
+  };
+}
+
+function marketingToBriefing(data: MarketingData, range: Range): BriefingData {
+  const totalSessions = data.sources.reduce((s, x) => s + x.sessions, 0);
+  const topSource = data.sources[0];
+  const topSourceShare = totalSessions > 0 && topSource ? (topSource.sessions / totalSessions) * 100 : null;
+
+  const narrativeParts: string[] = [];
+  if (topSource && topSourceShare !== null) {
+    narrativeParts.push(`${topSource.source} is the top traffic source, at ${topSourceShare.toFixed(0)}% of sessions.`);
+  }
+  if (data.pages[0]) {
+    narrativeParts.push(`The top content page is "${data.pages[0].title}" with ${data.pages[0].views.toLocaleString()} views.`);
+  }
+  narrativeParts.push(`Total traffic across ${rangeLabel(range)} was ${totalSessions.toLocaleString()} sessions.`);
+
+  return {
+    reportTitle: "OneBoard Marketing Briefing",
+    sectionLabel: "Marketing & Funnel",
+    dataSource: "GA4 Live",
+    period: rangeLabel(range),
+    generatedAt: new Date().toLocaleString(),
+    kpis: [
+      { id: "total_sessions", metric: "Total Traffic Sessions", value: totalSessions },
+      {
+        id: "top_source",
+        metric: "Top Source",
+        value: topSource ? topSource.source : "—",
+        note: topSourceShare !== null ? `${topSourceShare.toFixed(0)}% overall share` : undefined,
+      },
+      { id: "top_page_views", metric: "Top Page Views", value: data.pages[0]?.views ?? 0 },
+      { id: "landing_page_views", metric: "Landing Page Views", value: data.landingPages[0]?.sessions ?? 0 },
+    ],
+    narrative: narrativeParts.join(" "),
+  };
+}
+
+function operationsToBriefing(data: OperationsData, range: Range): BriefingData {
+  const narrativeParts: string[] = [
+    `Bounce rate for ${rangeLabel(range)} was ${Math.round(data.summary.bounceRate * 100)}%, with an average engagement duration of ${formatDuration(data.summary.avgSessionDuration)}.`,
+  ];
+  if (data.notFoundPages.length > 0) {
+    const total404 = data.notFoundPages.reduce((s, p) => s + p.views, 0);
+    narrativeParts.push(`${data.notFoundPages.length} route(s) returned HTTP 404 during this window, totaling ${total404} occurrences.`);
+  } else {
+    narrativeParts.push(`No route issues were detected in this window.`);
+  }
+
+  return {
+    reportTitle: "OneBoard Operations Briefing",
+    sectionLabel: "Operations & Diagnostics",
+    dataSource: "GA4 Live",
+    period: rangeLabel(range),
+    generatedAt: new Date().toLocaleString(),
+    kpis: [
+      { id: "bounce_rate", metric: "Bounce Rate", value: Math.round(data.summary.bounceRate * 100), unit: "%" },
+      { id: "avg_engagement", metric: "Avg. Engagement Duration", value: formatDuration(data.summary.avgSessionDuration) },
+      { id: "route_issues", metric: "Route Issues (404s)", value: data.notFoundPages.length },
+    ],
+    narrative: narrativeParts.join(" "),
+  };
+}
+
+// Mirrors HrFactCard's existing `invertGoodDirection` logic — that
+// component already correctly knows rising attrition is bad on screen; the
+// PDF export must never disagree with what's already shown for the same
+// number. Thresholds come from data.companyTargets — real fields already
+// used by hrAnomaliesAndContext, nothing invented here.
+function classifyHrStatus(
+  fact: HRFact,
+  targets: HRData["companyTargets"]
+): { status: Status; statusLabel: string; deltaLabel: string; note?: string } {
+  const value = typeof fact.value === "number" ? fact.value : parseFloat(String(fact.value));
+
+  if (fact.id === "attrition") {
+    const max = targets.attritionTargetMax;
+    const critical = value >= max;
+    const rising = fact.delta?.direction === "up" && (fact.delta?.value ?? 0) > 0;
+    const status: Status = critical ? "critical" : rising ? "watch" : "ok";
+    const statusLabel = critical ? "Above Target" : rising ? "Rising · Watch" : "On Track";
+    const deltaLabel = fact.delta ? `${fact.delta.value}pp (< ${max}% Target)` : `< ${max}% Target`;
+    return { status, statusLabel, deltaLabel };
+  }
+
+  if (fact.id === "compliance") {
+    const min = targets.complianceTargetMin;
+    const below = value < min;
+    const status: Status = below ? "critical" : "ok";
+    const statusLabel = below ? "Below Target" : "On Track";
+    const deltaLabel = below ? `Below ${min}.0% Target` : `Above ${min}.0% Target`;
+    return { status, statusLabel, deltaLabel };
+  }
+
+  if (fact.id === "headcount") {
+    // No real target exists for headcount. A small MoM move is noise, not
+    // a status signal — stays neutral regardless of direction, matching
+    // the "STABLE" pill already shown on screen.
+    // fact.delta.value is already signed here (hrFacts.ts's toDeltaField,
+    // used only for headcount, keeps the raw +/- pct — unlike
+    // toPointDeltaField for attrition/compliance, which Math.abs()'s it).
+    // Prepending another "+"/"-" on top double-signs a decrease into
+    // "--0.3%". The ArrowTriangle already shown next to this label carries
+    // the direction, same as HrFactCard's ▲/▼ glyph on screen — so just use
+    // the raw value, matching that pattern instead of re-deriving a sign.
+    const deltaLabel = fact.delta ? `${fact.delta.value}% MoM` : "—";
+    return { status: "neutral", statusLabel: "Stable", deltaLabel };
+  }
+
+  // Remaining fact (top hire source) — informational, no target to breach.
+  // Same pattern as Executive's "Top Channel" / Marketing's "Top Source":
+  // the share text is a plain caption (note), not a colored status pill —
+  // this number has no real target to be on/off track against, so it
+  // shouldn't be dressed up as a status judgment.
+  return {
+    status: "neutral",
+    statusLabel: "",
+    deltaLabel: "",
+    note: fact.context,
+  };
+}
+
+// Converts the AI's alerts ({label, detail}, no status — see route.ts's
+// AiNarrativeResult) into BriefingRisk[] by matching each alert back to
+// the KPI it's describing and reusing THAT KPI's already-computed status.
+// This is the actual mechanism behind the color-consistency rule: status
+// is computed once (in classifyHrStatus, above) and every other place it
+// appears just looks it up — nothing recomputes it independently, so
+// nothing can disagree with it.
+function alertsToRisks(
+  alerts: { label: string; detail: string }[],
+  kpis: BriefingFact[]
+): BriefingRisk[] {
+  return alerts.map((a) => {
+    const text = `${a.label} ${a.detail}`.toLowerCase();
+    const matched = kpis.find((k) => text.includes(String(k.id).toLowerCase()));
+    return {
+      label: a.label,
+      detail: a.detail,
+      // An alert existing at all means something was flagged. If no KPI
+      // match is found, "watch" is the safe floor — never silently "ok".
+      status: matched?.status ?? "watch",
+    };
+  });
+}
+
+function hrToBriefing(data: HRData, range: Range): BriefingData {
+  const kpis: BriefingFact[] = data.facts.map((f) => {
+    const { status, statusLabel, deltaLabel, note } = classifyHrStatus(f, data.companyTargets);
+    return {
+      id: f.id,
+      metric: f.metric,
+      value: f.value,
+      unit: f.unit,
+      status,
+      statusLabel,
+      note,
+      delta: f.delta ? { direction: f.delta.direction, label: deltaLabel } : undefined,
+    };
+  });
+
+  // Two-point chart. Its start point must match whatever the Watch Items
+  // text says the trend "since <Month>" is — both come from the exact same
+  // detectSustainedTrend() run, not two independently-chosen starting
+  // points, so the chart and the narrative can never disagree on where the
+  // trend began (same rule as the color-consistency system). If no
+  // sustained run reaches the latest point (e.g. attrition is flat), there's
+  // no "since X" claim being made anywhere else on the page either, so it
+  // falls back to the plain trailing-12-month first-vs-last reading.
+  const attritionSeries = data.monthlySnapshot.map((m) => ({
+    label: monthLabel(m.month),
+    value: m.attritionRate,
+  }));
+  const { runs: attritionRuns } = detectSustainedTrend(attritionSeries, "Attrition", 3, true);
+  const trailingRun = attritionRuns.find((r) => r.endIndex === data.monthlySnapshot.length - 1);
+
+  const first = data.monthlySnapshot[trailingRun ? trailingRun.startIndex : 0];
+  const last = data.monthlySnapshot[data.monthlySnapshot.length - 1];
+
+  const chart = first && last ? {
+    title: "Attrition Trend — Start vs. Current",
+    subtitle: trailingRun
+      ? `${trailingRun.endIndex - trailingRun.startIndex + 1}-month ${trailingRun.direction === "up" ? "upward" : "downward"} run, first vs. most recent reading`
+      : "Trailing 12-month attrition, first vs. most recent reading",
+    points: [
+      { label: monthLabel(first.month), value: first.attritionRate, display: `${first.attritionRate}%` },
+      { label: monthLabel(last.month), value: last.attritionRate, display: `${last.attritionRate}%` },
+    ],
+    gauge: {
+      label: "Compliance vs. Target",
+      value: last.complianceRate,
+      target: data.companyTargets.complianceTargetMin,
+      display: `${last.complianceRate}%`,
+      footnote: `Target = ${data.companyTargets.complianceTargetMin}% internal minimum`,
+    },
+  } : undefined;
+
+  const narrative = data.facts
+    .map((f) => f.context)
+    .filter((c): c is string => !!c)
+    .join(" ");
+
+  return {
+    reportTitle: "HR & Workforce Performance",
+    sectionLabel: "HR View",
+    audience: "Executive Leadership",
+    dataSource: "Sample HR Dataset (Illustrative)",
+    period: "Trailing 12 Months",
+    generatedAt: new Date().toLocaleString(),
+    kpis,
+    chart,
+    narrative: narrative || "No additional context available for this period.",
+  };
+}
+
+
+function hrAnomaliesAndContext(data: HRData) {
+  const attritionSeries = data.monthlySnapshot.map((m) => ({
+    label: monthLabel(m.month),
+    value: m.attritionRate,
+  }));
+  const complianceSeries = data.monthlySnapshot.map((m) => ({
+    label: monthLabel(m.month),
+    value: m.complianceRate,
+  }));
+
+  const anomalies = [
+    ...detectAnomalies(attritionSeries, "Attrition", {
+      target: { max: data.companyTargets.attritionTargetMax },
+      valueIsPercentage: true,
+    }),
+    ...detectAnomalies(complianceSeries, "Compliance", {
+      target: { min: data.companyTargets.complianceTargetMin },
+      valueIsPercentage: true,
+    }),
+  ];
+
+  const context = {
+    attritionTargetMax: data.companyTargets.attritionTargetMax,
+    complianceTargetMin: data.companyTargets.complianceTargetMin,
+    currentAttrition: data.monthlySnapshot[data.monthlySnapshot.length - 1]?.attritionRate,
+    currentCompliance: data.monthlySnapshot[data.monthlySnapshot.length - 1]?.complianceRate,
+  };
+
+  return { anomalies, context };
+}
+
+function marketingAnomaliesAndContext(data: MarketingData) {
+  const trendSeries = (data.trend ?? []).map((t) => ({
+    label: formatDate(t.date),
+    value: t.sessions,
+  }));
+
+  const anomalies = detectAnomalies(trendSeries, "Sessions", {
+    trendMinStreak: 3,
+  });
+
+  const totalSessions = data.sources.reduce((s, x) => s + x.sessions, 0);
+  const ranked = [...data.sources].sort((a, b) => b.sessions - a.sessions);
+
+  const context: Record<string, number | string> = { totalSessions };
+  if (ranked[0]) {
+    context.topSourceName = ranked[0].source;
+    context.topSourceSessions = ranked[0].sessions;
+  }
+  if (ranked[1]) {
+    context.secondSourceName = ranked[1].source;
+    context.secondSourceSessions = ranked[1].sessions;
+  }
+
+  return { anomalies, context };
+}
+
+// Auto-detects whether an anomaly signal describes an objective technical
+// fault (broken link, server error, etc.) — based on well-known technical
+// markers in the text, not a subjective judgment call. Runs in code, at
+// signal-creation time, not via the AI — so classification is identical
+// every time, and nobody has to remember to hand-tag each new signal.
+const TECHNICAL_ISSUE_PATTERN = /\b(4\d{2}|5\d{2})\b|\berror\b|\bfailed\b|\btimeout\b|\bbroken\b|\bnot found\b/i;
+
+function classifyAnomalyType(
+  label: string,
+  detail: string,
+  fallback: AiAnomaly["type"]
+): AiAnomaly["type"] {
+  const text = `${label} ${detail}`;
+  return TECHNICAL_ISSUE_PATTERN.test(text) ? "technical_issue" : fallback;
+}
+
+// Operations has no time series to run detectAnomalies against, but a
+// recorded 404 IS a real, already-computed signal — not something that
+// needs inventing. The severity threshold (>=5 occurrences) mirrors the
+// exact rule OperationsView already uses to render "High/Low Severity"
+// badges on screen, so this isn't a new judgment call, just the same one
+// also passed to the AI.
+function operationsAnomalies(data: OperationsData): AiAnomaly[] {
+  if (data.notFoundPages.length === 0) return [];
+
+  const totalOccurrences = data.notFoundPages.reduce((s, p) => s + p.views, 0);
+  const highSeverity = data.notFoundPages.length > 0;
+  const label = "Route errors detected";
+  const detail = `${data.notFoundPages.length} route(s) returned HTTP 404 during this window, totaling ${totalOccurrences} occurrences.`;
+
+  return [
+    {
+      id: "operations-404-routes",
+      type: classifyAnomalyType(label, detail, "target_breach"),
+      label,
+      detail,
+      severity: highSeverity ? "warning" : "info",
+    },
+  ];
+}
+
+async function exportBriefingPDF(briefing: BriefingData) {
+  // TEMP DEBUG — investigating a reported digit-truncation bug ("3.2%"
+  // rendering as ".2%") in the exported PDF. This is the last point the
+  // data is touched before handing off to ExecutiveBriefingPDF, so
+  // JSON.stringify here shows the exact raw strings/numbers the component
+  // receives. Remove once root-caused.
+  // eslint-disable-next-line no-console
+  console.log("[DEBUG exportBriefingPDF] kpis:", JSON.stringify(briefing.kpis, null, 2));
+  // eslint-disable-next-line no-console
+  console.log("[DEBUG exportBriefingPDF] chart.points:", JSON.stringify(briefing.chart?.points, null, 2));
+
+  const [{ pdf }, { ExecutiveBriefingPDF }] = await Promise.all([
+    import("@react-pdf/renderer"),
+    import("../components/ExecutiveBriefingPDF"),
+  ]);
+  const blob = await pdf(<ExecutiveBriefingPDF data={briefing} />).toBlob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `OneBoard-${briefing.sectionLabel.replace(/\s+/g, "-")}-Briefing-${new Date().toISOString().slice(0, 10)}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Picks only the fields AiNarrativeFact actually declares — BriefingFact
+// now also carries icon/status/statusLabel (PDF-only presentation fields),
+// which have no meaning to the AI narrative endpoint.
+function toNarrativeFact(f: BriefingFact, idPrefix: string, metricPrefix: string): AiNarrativeFact {
+  return {
+    id: `${idPrefix}_${f.id}`,
+    metric: `${metricPrefix} — ${f.metric}`,
+    value: f.value,
+    unit: f.unit,
+    delta: f.delta,
+  };
+}
+
+function executiveCrossDeptFacts(
+  execData: ExecutiveData,
+  range: Range,
+  marketingData?: MarketingData,
+  operationsData?: OperationsData,
+  hrData?: HRData
+): AiNarrativeFact[] {
+  const facts: AiNarrativeFact[] = executiveToBriefing(execData, range).kpis.map((f) =>
+    toNarrativeFact(f, "executive", "Executive")
+  );
+
+  if (marketingData) {
+    facts.push(
+      ...marketingToBriefing(marketingData, range).kpis.map((f) => toNarrativeFact(f, "marketing", "Marketing"))
+    );
+  }
+
+  if (operationsData) {
+    facts.push(
+      ...operationsToBriefing(operationsData, range).kpis.map((f) => toNarrativeFact(f, "operations", "Operations"))
+    );
+  }
+
+  if (hrData) {
+    facts.push(...hrToBriefing(hrData, range).kpis.map((f) => toNarrativeFact(f, "hr", "HR")));
+  }
+
+  return facts;
+}
+
+async function generateAiNarrative(
+  facts: AiNarrativeFact[],
+  anomalies?: AiAnomaly[],
+  context?: Record<string, number | string>
+): Promise<AiNarrativeResult | null> {
+  try {
+    const res = await fetch("/api/ai-narrative", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ facts, anomalies: anomalies ?? [], context: context ?? null }),
+    });
+    const json = await res.json();
+    if (json.error) {
+      console.error("AI narrative generation failed:", json.error);
+      return null;
+    }
+    return json as AiNarrativeResult;
+  } catch (err) {
+    console.error("Could not reach the AI narrative endpoint:", err);
+    return null;
+  }
+}
+
 
 /* ============== Page ============== */
 
@@ -1808,19 +2820,38 @@ export default function Home() {
   const [showPayload, setShowPayload] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
   const [demoError, setDemoError] = useState<string | null>(null);
+  const [briefingLoading, setBriefingLoading] = useState(false); 
+
+  const [aiNarratives, setAiNarratives] = useState<{
+    executive?: AiNarrativeResult;
+    marketing?: AiNarrativeResult;
+    operations?: AiNarrativeResult;
+    hr?: AiNarrativeResult;
+  }>({});
 
   const [excel, setExcel] = useState<ExcelState>({
     connected: false,
     filename: null,
     rows: null,
     source: null,
+    data: null,
   });
+
+  const [excelError, setExcelError] = useState<string | null>(null);
+  const [excelLoading, setExcelLoading] = useState(false);
 
   const [latestData, setLatestData] = useState<{
     executive?: ExecutiveData;
     operations?: OperationsData;
+    marketing?: MarketingData;
+    hr?: HRData;
   }>({});
   const [lastMs, setLastMs] = useState<number | undefined>(undefined);
+  const [tabMs, setTabMs] = useState<{
+    executive?: number;
+    marketing?: number;
+    operations?: number;
+  }>({});
 
   const [isDark, setIsDark] = useState(true);
 
@@ -1844,30 +2875,100 @@ export default function Home() {
   function handleExecutiveData(data: ExecutiveData, ms?: number) {
     setLatestData((prev) => ({ ...prev, executive: data }));
     if (ms !== undefined) setLastMs(ms);
+    setTabMs((prev) => ({ ...prev, executive: ms }));
   }
 
   function handleOperationsData(data: OperationsData, ms?: number) {
     setLatestData((prev) => ({ ...prev, operations: data }));
     if (ms !== undefined) setLastMs(ms);
+     setTabMs((prev) => ({ ...prev, operations: ms }));
   }
 
-  function handleExcelFileSelect(file: File) {
-    setExcel({ connected: true, filename: file.name, rows: null, source: "upload" });
+  function handleMarketingData(data: MarketingData, ms?: number) {
+    setLatestData((prev) => ({ ...prev, marketing: data }));
+    if (ms !== undefined) setLastMs(ms);
+    setTabMs((prev) => ({ ...prev, marketing: ms }));
   }
 
-  async function handleLoadDemoExcel() {
+  function handleHRData(data: HRData) {
+    setLatestData((prev) => ({ ...prev, hr: data }));
+  }
+  function handleExecutiveNarrative(result: AiNarrativeResult) {
+    setAiNarratives((prev) => ({ ...prev, executive: result}));
+  }
+  function handleMarketingNarrative(result: AiNarrativeResult) {
+    setAiNarratives((prev) => ({ ...prev, marketing: result}));
+  }
+  function handleOperationsNarrative(result: AiNarrativeResult) {
+    setAiNarratives((prev) => ({ ...prev, operations: result }));
+  }
+  function handleHRNarrative(result: AiNarrativeResult) {
+    setAiNarratives((prev) => ({ ...prev, hr: result }));
+  }
+
+
+  async function handleExcelFileSelect(file: File) {
+  setExcelError(null);
+  setExcelLoading(true);
+
+  setExcel({ connected: true, filename: file.name, rows: null, source: "upload", data: null });
+
+  try {
+    const isCsv = file.name.toLowerCase().endsWith(".csv");
+    let rows: Record<string, unknown>[];
+
+    if (isCsv) {
+      const text = await file.text();
+      const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+      if (parsed.errors.length > 0) {
+        throw new Error(parsed.errors[0].message);
+      }
+      rows = parsed.data as Record<string, unknown>[];
+    } else {
+      // .xlsx / .xls
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
+      const firstSheetName = workbook.SheetNames[0];
+      if (!firstSheetName) {
+        throw new Error("This workbook has no sheets.");
+      }
+      const sheet = workbook.Sheets[firstSheetName];
+      rows = XLSX.utils.sheet_to_json(sheet, { defval: null }) as Record<string, unknown>[];
+    }
+
+    if (rows.length === 0) {
+      throw new Error("No data rows found — check the file has a header row plus at least one data row.");
+    }
+
+    setExcel({
+      connected: true,
+      filename: file.name,
+      rows: rows.length,
+      source: "upload",
+      data: rows,
+    });
+  } catch (e) {
+    setExcelError(e instanceof Error ? e.message : "Could not parse this file.");
+    setExcel({ connected: false, filename: null, rows: null, source: null, data: null });
+  } finally {
+    setExcelLoading(false);
+  }
+}
+  
+async function handleLoadDemoExcel() {
     setDemoLoading(true);
     setDemoError(null);
     try {
       const res = await fetch("/demo-baseline.csv");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
-      const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+      const parsed = Papa.parse<Record<string, unknown>>(text, { header: true, skipEmptyLines: true });
       setExcel({
         connected: true,
         filename: "demo-baseline.csv",
         rows: parsed.data.length,
         source: "demo",
+        data: parsed.data,
       });
     } catch (e) {
       setDemoError("Could not load the demo dataset.");
@@ -1875,6 +2976,94 @@ export default function Home() {
       setDemoLoading(false);
     }
   }
+
+  async function handleExportBriefing() {
+  setBriefingLoading(true);
+  try {
+    let briefing: BriefingData | null = null;
+    let narrativeResult: AiNarrativeResult | null = null;
+    let inputFacts: AiNarrativeFact[] | undefined;
+    let inputAnomalies: AiAnomaly[] | undefined;
+    let inputContext: Record<string, number | string> | undefined;
+
+    if (tab === "Executive" && latestData.executive) {
+      briefing = executiveToBriefing(latestData.executive, range);
+      narrativeResult = aiNarratives.executive ?? null;
+      if (!narrativeResult) {
+        inputFacts = executiveCrossDeptFacts(
+          latestData.executive,
+          range,
+          latestData.marketing,
+          latestData.operations,
+          latestData.hr
+        );
+        const hrPart = latestData.hr
+          ? hrAnomaliesAndContext(latestData.hr)
+          : { anomalies: [] as AiAnomaly[], context: undefined as Record<string, number | string> | undefined };
+        inputAnomalies = hrPart.anomalies;
+        inputContext = hrPart.context;
+      }
+    } else if (tab === "Marketing" && latestData.marketing) {
+      briefing = marketingToBriefing(latestData.marketing, range);
+      narrativeResult = aiNarratives.marketing ?? null;
+      if (!narrativeResult) {
+        inputFacts = briefing.kpis;
+        const mktPart = marketingAnomaliesAndContext(latestData.marketing);
+        inputAnomalies = mktPart.anomalies;
+        inputContext = mktPart.context;
+      }
+    } else if (tab === "Operations" && latestData.operations) {
+      briefing = operationsToBriefing(latestData.operations, range);
+      narrativeResult = aiNarratives.operations ?? null;
+      if (!narrativeResult) {
+        inputFacts = briefing.kpis;
+        inputAnomalies = operationsAnomalies(latestData.operations);
+      }
+    } else if (tab === "HR" && latestData.hr) {
+      briefing = hrToBriefing(latestData.hr, range);
+      narrativeResult = aiNarratives.hr ?? null;
+      if (!narrativeResult) {
+        inputFacts = briefing.kpis;
+        const hrPart = hrAnomaliesAndContext(latestData.hr);
+        inputAnomalies = hrPart.anomalies;
+        inputContext = hrPart.context;
+      }
+    }
+
+    if (!briefing) {
+      alert("Data for this tab hasn't finished loading yet — try again in a moment.");
+      return;
+    }
+
+    // Export Briefing should always produce the complete report — it
+    // shouldn't depend on whether "Generate AI Summary" was clicked first
+    // on this tab. If nothing's been generated yet, generate it now.
+    if (!narrativeResult && inputFacts) {
+      const generated = await generateAiNarrative(inputFacts, inputAnomalies, inputContext);
+      if (generated) {
+        narrativeResult = generated;
+        if (tab === "Executive") setAiNarratives((prev) => ({ ...prev, executive: generated }));
+        if (tab === "Marketing") setAiNarratives((prev) => ({ ...prev, marketing: generated }));
+        if (tab === "Operations") setAiNarratives((prev) => ({ ...prev, operations: generated }));
+        if (tab === "HR") setAiNarratives((prev) => ({ ...prev, hr: generated }));
+      }
+    }
+
+    if (narrativeResult) {
+      briefing.narrative = narrativeResult.overview;
+      briefing.keyObservations = narrativeResult.keyObservations;
+      briefing.risks = alertsToRisks(narrativeResult.alerts, briefing.kpis);
+      briefing.recommendations = narrativeResult.recommendations;
+    }
+
+    await exportBriefingPDF(briefing);
+  } catch (e) {
+    alert("Could not generate the briefing PDF.");
+  } finally {
+    setBriefingLoading(false);
+  }
+}
+
 
   const payload = {
     metadata: {
@@ -2035,6 +3224,16 @@ export default function Home() {
             </button>
 
             <button
+            onClick={handleExportBriefing}
+            disabled={briefingLoading}
+            className="ob-header-btn text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-2 transition active:scale-95 disabled:opacity-60"
+            style={{ background: COLORS.indigoSoft, color: COLORS.indigo, border: "1px solid transparent" }}
+            >
+            {briefingLoading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+            {briefingLoading ? "Generating…" : "Export Report"}
+            </button>
+
+            <button
               onClick={() => setShowPayload(true)}
               className="ob-header-btn ob-header-btn-outline text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-2 transition active:scale-95"
               style={{ background: COLORS.surface, color: COLORS.inkSoft, border: `1px solid ${COLORS.line}`, boxShadow: SHADOW }}
@@ -2046,11 +3245,24 @@ export default function Home() {
         </header>
 
         {demoError && <ErrorBox message={demoError} />}
+        {excelError && <ErrorBox message={excelError} />}
 
         <SourcePanel
-          activeEndpoint={`/api/ga4/${tab.toLowerCase()} (${lastMs ?? "…"}ms)`}
+          activeEndpoint={
+            tab === "HR"
+              ? "/api/hr (sample, client-side)"
+              : `/api/ga4/${tab.toLowerCase()} (${
+                  (tab === "Executive"
+                    ? tabMs.executive
+                    : tab === "Marketing"
+                    ? tabMs.marketing
+                    : tabMs.operations) ?? "…"
+                }ms)`
+          }
           excel={excel}
+        
           onExcelFileSelect={handleExcelFileSelect}
+          hrActive={tab === "HR"}
         />
 
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2070,17 +3282,34 @@ export default function Home() {
               variant="accent"
             />
           </div>
-          <SegmentedControl options={RANGES} value={range} onChange={setRange} size="sm" variant="accent" />
+          {tab !== "HR" ? (
+            <SegmentedControl options={RANGES} value={range} onChange={setRange} size="sm" variant="accent" />
+          ) : (
+            <span className="text-xs font-medium" style={{ color: COLORS.inkFaint }}>
+              Trailing 12 months
+            </span>
+          )}
         </div>
 
         <div className={tab === "Executive" ? "ob-fade-in" : "hidden"}>
-          <ExecutiveView range={range} onData={handleExecutiveData} />
+          <ExecutiveView
+            range={range}
+            onData={handleExecutiveData}
+            onNarrative={handleExecutiveNarrative}
+            narrative={aiNarratives.executive}
+            marketingData={latestData.marketing}
+            operationsData={latestData.operations}
+            hrData={latestData.hr}
+          />
         </div>
         <div className={tab === "Marketing" ? "ob-fade-in" : "hidden"}>
-          <MarketingView range={range} />
+          <MarketingView range={range} onData={handleMarketingData} onNarrative={handleMarketingNarrative} narrative={aiNarratives.marketing} />
         </div>
         <div className={tab === "Operations" ? "ob-fade-in" : "hidden"}>
-          <OperationsView range={range} onData={handleOperationsData} />
+          <OperationsView range={range} onData={handleOperationsData} onNarrative={handleOperationsNarrative} narrative={aiNarratives.operations} />
+        </div>
+        <div className={tab === "HR" ? "ob-fade-in" : "hidden"}>
+          <HRView onData={handleHRData} onNarrative={handleHRNarrative} narrative={aiNarratives.hr} />
         </div>
 
         <div
@@ -2088,7 +3317,7 @@ export default function Home() {
           style={{ borderTop: `1px solid ${COLORS.line}`, color: COLORS.inkFaint }}
         >
           <span>OneBoard · Built with Next.js, TypeScript &amp; the GA4 Data API</span>
-          <span>Created Aug 08, 2026</span>
+          <span>Created on Aug 08, 2026</span>
         </div>
       </main>
 

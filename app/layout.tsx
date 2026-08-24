@@ -33,6 +33,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                 var theme = localStorage.getItem('oneboard-theme');
                 if (theme !== 'light') document.documentElement.classList.add('dark');
               } catch (e) {}
+               
             `,
           }}
         />
