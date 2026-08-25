@@ -139,9 +139,11 @@ const styles = StyleSheet.create({
   logoMark: { width: 16, height: 16, borderRadius: 4, backgroundColor: BRAND, alignItems: "center", justifyContent: "center", marginRight: 6 },
   logoLetter: { color: "white", fontSize: 9, fontWeight: 800 },
   wordmark: { fontSize: 12, fontWeight: 800, color: INK, marginRight: 6 },
-  eyebrow: { fontSize: 8.5, color: INK_SOFT, fontWeight: 600 },
-  titleRow: { flexDirection: "row", alignItems: "center" },
-  reportTitle: { fontSize: 20, fontWeight: 700, color: INK, marginRight: 10 },
+  eyebrow: { fontSize: 8.5, color: INK_SOFT, fontWeight: 600, marginRight: 8 },
+  reportTitle: { fontSize: 20, fontWeight: 700, color: INK },
+  // Lives in brandRow now, after the "Executive Briefing" eyebrow text —
+  // previously sat right next to reportTitle, cramped against a 20px
+  // headline. Same tag, just relocated for breathing room.
   internalTag: { fontSize: 7.5, fontWeight: 700, color: "#a06c00", borderWidth: 1, borderColor: "#a06c00", borderRadius: 2, paddingVertical: 1, paddingHorizontal: 5 },
   metaBlock: { alignItems: "flex-end" },
   metaLine: { fontSize: 8, color: "#33404f", marginBottom: 2 },
@@ -159,10 +161,17 @@ const styles = StyleSheet.create({
   kpiLabelRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
   kpiIcon: { fontSize: 8, marginRight: 3 },
   kpiLabel: { fontSize: 7.5, fontWeight: 800, color: "#45505f", textTransform: "uppercase" },
-  // fontSize stepped down one notch (22->20) as a general margin-of-safety
-  // adjustment, independent of the digit-truncation investigation — see
-  // exportBriefingPDF's debug logging for that. Not presented as a fix.
   kpiValue: { fontSize: 20, fontWeight: 800, color: INK, marginBottom: 5 },
+  // Applied only to string-valued KPIs (channel/source names — numeric
+  // values never need it). Caps genuinely-long values (e.g. a long UTM
+  // source/medium pair) at 2 lines with an ellipsis instead of letting
+  // react-pdf's line-breaker keep trying to fit a 3rd/4th line in a ~93pt
+  // box — a real, independent robustness issue regardless of the
+  // truncation bug below (an unbounded value could already blow out the
+  // KPI row's height). Also narrows the window for that bug: it's only
+  // been observed on values that needed a forced word-level break for a
+  // line beyond the 2nd, which this makes impossible.
+  kpiValueClamped: { maxLines: 2, textOverflow: "ellipsis" },
   kpiDeltaRow: { flexDirection: "row", alignItems: "center" },
   kpiDeltaText: { fontSize: 8.5, fontWeight: 700 },
   pill: { marginTop: 5, alignSelf: "flex-start", paddingVertical: 2, paddingHorizontal: 6, borderRadius: 7 },
@@ -184,12 +193,6 @@ const styles = StyleSheet.create({
   barRow: { flexDirection: "row", alignItems: "center", marginBottom: 14 },
   barMonth: { width: 28, fontSize: 7.5, fontWeight: 700, color: "#45505f" },
   barTrack: { flex: 1, height: 20, backgroundColor: "#eef0f3", borderRadius: 2 },
-  // Fixed-width + right-aligned + bold is the one narrow, fragile combo in
-  // this file — widened past what any realistic percentage value needs
-  // (was 32, tight enough that a font-metric mismatch between renderers
-  // could clip the leading digit) as a defensive margin.
-  // fontSize also stepped down one notch (8.5->7.5), same independent
-  // margin-of-safety adjustment as kpiValue above.
   barValue: { width: 46, textAlign: "right", fontSize: 7.5, fontWeight: 800, color: INK },
   chartNote: { fontSize: 6.5, color: "#8a94a3", marginTop: 2 },
 
@@ -287,7 +290,33 @@ function KPICard({ fact, isLast }: { fact: BriefingFact; isLast?: boolean }) {
       <View style={styles.kpiLabelRow}>
         <Text style={styles.kpiLabel}>{fact.metric}</Text>
       </View>
-      <Text style={styles.kpiValue}>{fact.value}{fact.unit ?? ""}</Text>
+      {/* A leading-character-truncation bug was reported here ("3.2%"
+          rendering as ".2%", "16m 2s" as "16 2s", "Direct" as "irect") and
+          confirmed real (not a viewer artifact — checked the raw PDF text
+          layer directly). Root cause not fully closed: the best working
+          theory is a rare async race in @react-pdf/renderer's browser
+          font-loading path — layout runs before the custom Inter font is
+          100% ready, so a handful of glyphs get measured/placed wrong.
+          exportBriefingPDF now explicitly awaits Font.load() for every
+          weight before rendering, which should close that window, but it
+          has recurred at least once since that fix shipped (0/24 in a
+          repeated real-Chrome batch after the fix — genuinely rare, not
+          reliably reproducible on demand). Treat this as still open, not
+          resolved, if it's reported again: get the actual .pdf file (not a
+          screenshot) and check the raw text layer first. A related but
+          DIFFERENT-looking symptom — "(direct) / (none)" rendering as
+          garbled multi-line text with a spurious hyphen — only happens on
+          string values that need to wrap to a 3rd+ line in this ~93pt-wide
+          box, tracing to @react-pdf/textkit's "best fit" line-breaking
+          fallback (applyBestFit/getNextBreakpoint in
+          node_modules/@react-pdf/textkit — not this file); kpiValueClamped
+          below caps string KPI values at 2 lines specifically to keep them
+          out of that fallback path. Also 0/24 in the same batch, so
+          unconfirmed whether it still fully prevents it. */}
+      <Text style={[styles.kpiValue, typeof fact.value === "string" ? styles.kpiValueClamped : undefined]}>
+        {fact.value}
+        {fact.unit ?? ""}
+      </Text>
       {fact.delta ? (
         <View style={styles.kpiDeltaRow}>
           {showBadge ? <Badge status={status} symbol={status === "ok" ? "check" : "!"} /> : <ArrowTriangle direction={fact.delta.direction} color={c.text} />}
@@ -351,7 +380,13 @@ function WatchItems({ risks }: { risks: BriefingRisk[] }) {
         const c = STATUS[r.status];
         const showBadge = r.status !== "neutral";
         return (
-          <View key={i} style={[styles.watchItem, { backgroundColor: c.rowBg, borderLeftWidth: 3, borderLeftColor: c.text }]}>
+          // wrap={false}: each row is its own atomic unit — with the
+          // cross-department Watch Items summary this list can now run
+          // longer than the 1-2 rows it used to, so a row landing right at
+          // the page boundary must move whole to the next page rather than
+          // being sliced mid-row (the exact corruption already found and
+          // fixed for the Recommended Next Steps block below).
+          <View key={i} wrap={false} style={[styles.watchItem, { backgroundColor: c.rowBg, borderLeftWidth: 3, borderLeftColor: c.text }]}>
             {showBadge ? <Badge status={r.status} symbol={r.status === "ok" ? "check" : "!"} /> : null}
             <Text style={styles.watchText}>
               <Text style={{ fontWeight: 700, color: INK }}>{r.label} </Text>
@@ -409,11 +444,9 @@ export function ExecutiveBriefingPDF({ data }: { data: BriefingData }) {
               <View style={styles.logoMark}><Text style={styles.logoLetter}>O</Text></View>
               <Text style={styles.wordmark}>OneBoard</Text>
               <Text style={styles.eyebrow}>Executive Briefing</Text>
-            </View>
-            <View style={styles.titleRow}>
-              <Text style={styles.reportTitle}>{data.reportTitle}</Text>
               <Text style={styles.internalTag}>INTERNAL</Text>
             </View>
+            <Text style={styles.reportTitle}>{data.reportTitle}</Text>
           </View>
           <View style={styles.metaBlock}>
             <Text style={styles.metaLine}><Text style={styles.metaLabel}>Period: </Text>{data.period}</Text>
@@ -455,9 +488,19 @@ export function ExecutiveBriefingPDF({ data }: { data: BriefingData }) {
             see spec: only build this from a real dimension in the dataset */}
         {data.drilldown ? <Drilldown table={data.drilldown} /> : null}
 
-        {/* Recommendations */}
+        {/* Recommendations. wrap={false}: when this block doesn't fit in
+            the remaining space on the page, react-pdf's default behavior
+            can split it mid-row instead of moving it whole to the next
+            page — observed with an HR Excel-baseline override severe
+            enough to put both attrition and compliance in "critical"
+            status simultaneously (a third Watch Item pushes this section
+            just past the page boundary), which rendered the numbered
+            circle badges sliced in half across the page break. wrap={false}
+            makes the heading+cards one atomic unit: either it fits, or the
+            whole thing moves to page 2 intact — still two pages in that
+            edge case, but never a corrupted split. */}
         {data.recommendations?.length ? (
-          <View>
+          <View wrap={false}>
             <Text style={styles.sectionTitle}>Recommended Next Steps</Text>
             <View style={styles.decisionRow}>
               {data.recommendations.map((rec, i) => (
