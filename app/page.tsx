@@ -3814,6 +3814,7 @@ async function handleLoadDemoExcel() {
         .ob-tab-inactive {
           position: absolute;
           inset: 0;
+          overflow: hidden;
           visibility: hidden;
           pointer-events: none;
           z-index: -1;
