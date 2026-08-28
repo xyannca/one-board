@@ -1,5 +1,43 @@
-channel,target_sessions
-Direct,10
-Organic Search,5
-Referral,3
-Organic Social,2
+employee_id,name,department,hire_date,salary,employment_status
+EMP-0021,Sage Rhodes,Support,2019-01-04,72500,Active
+EMP-0007,Blair Jansen,Finance,2019-01-06,73500,Active
+EMP-0035,Harper Grant,Finance,2019-03-13,94000,Active
+EMP-0006,Finley Bennett,Sales,2019-08-20,68000,Active
+EMP-0022,Parker Abara,Finance,2019-08-27,81000,Active
+EMP-0026,Micah Vance,Support,2019-09-22,60000,Active
+EMP-0039,Parker Ibarra,Sales,2019-11-09,68500,Active
+EMP-0031,Kai Boone,Support,2019-12-20,72000,Active
+EMP-0019,Micah Sabo,Sales,2020-01-17,63500,Active
+EMP-0011,Avery Farrow,Sales,2020-07-03,91500,Terminated
+EMP-0025,Noel Grant,Sales,2020-12-18,77000,Active
+EMP-0020,Finley Sabo,Sales,2021-01-19,62500,Active
+EMP-0009,Kai Yoon,Finance,2021-10-10,94000,Active
+EMP-0016,Adair Sabo,Support,2021-10-19,71500,Terminated
+EMP-0002,Cameron Delgado,Marketing,2021-10-22,85000,Terminated
+EMP-0023,River Ellison,Finance,2021-12-02,97500,Active
+EMP-0030,Finley Keating,Marketing,2021-12-22,67500,Active
+EMP-0034,Adair Holloway,Marketing,2022-04-16,64500,Active
+EMP-0037,Emerson Doyle,Marketing,2022-04-19,78000,Active
+EMP-0042,Sawyer Mercer,Operations,2022-05-01,59000,Active
+EMP-0010,Dakota Keating,Operations,2022-07-10,55000,Active
+EMP-0005,Wren Tanaka,Finance,2022-09-22,89000,Active
+EMP-0015,Emerson Yoon,Marketing,2023-01-03,72000,Terminated
+EMP-0024,Blair Grant,Operations,2023-02-13,54000,Active
+EMP-0036,Kai Lowry,Marketing,2023-05-02,84000,Active
+EMP-0004,Sawyer Boone,Engineering,2023-06-01,99500,Active
+EMP-0028,Reese Whitfield,Operations,2023-10-26,56500,Active
+EMP-0038,Casey Underwood,Sales,2023-11-21,85000,Active
+EMP-0014,Sage Quintero,Marketing,2024-04-08,76500,Active
+EMP-0033,Remy Jansen,Support,2024-04-22,57500,Active
+EMP-0012,Elliot Fontaine,Operations,2024-05-07,71000,Terminated
+EMP-0018,Casey Underwood,Sales,2024-05-25,83000,Active
+EMP-0017,Emerson Pruitt,Operations,2024-09-01,75000,Terminated
+EMP-0041,Elliot Vance,Operations,2024-09-03,63000,Active
+EMP-0008,Dakota Carver,Operations,2024-12-21,72500,Active
+EMP-0001,Adair Zelinski,Marketing,2025-01-11,88000,Active
+EMP-0029,Remy Osei,Support,2025-05-24,65500,Active
+EMP-0040,Tatum Underwood,Operations,2025-09-13,65500,Active
+EMP-0003,Shay Yoon,Engineering,2025-09-14,95500,Active
+EMP-0032,Parker Chase,Marketing,2025-12-04,71500,Active
+EMP-0013,Tatum Osei,Support,2025-12-31,62500,Active
+EMP-0027,Blair Chase,Engineering,2026-04-12,97000,Active

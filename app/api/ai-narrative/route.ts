@@ -68,7 +68,8 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-5",
-        max_tokens: 1500,
+        max_tokens: 4000,
+        thinking: { type: "disabled" },
         system: SYSTEM_PROMPT,
         messages: [{ role: "user", content: JSON.stringify(userPayload) }],
       }),

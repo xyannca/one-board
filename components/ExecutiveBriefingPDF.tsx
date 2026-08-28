@@ -161,7 +161,10 @@ const styles = StyleSheet.create({
   kpiLabelRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
   kpiIcon: { fontSize: 8, marginRight: 3 },
   kpiLabel: { fontSize: 7.5, fontWeight: 800, color: "#45505f", textTransform: "uppercase" },
-  kpiValue: { fontSize: 20, fontWeight: 800, color: INK, marginBottom: 5 },
+  // Same size for every KPI value, numeric or string (e.g. a channel name,
+  // "(direct) / (none)", a formatted date) — mirrors the on-screen KpiCard,
+  // which no longer splits by value type either.
+  kpiValue: { fontSize: 15, fontWeight: 800, color: INK, marginBottom: 5 },
   // Applied only to string-valued KPIs (channel/source names — numeric
   // values never need it). Caps genuinely-long values (e.g. a long UTM
   // source/medium pair) at 2 lines with an ellipsis instead of letting
@@ -291,31 +294,46 @@ function KPICard({ fact, isLast }: { fact: BriefingFact; isLast?: boolean }) {
         <Text style={styles.kpiLabel}>{fact.metric}</Text>
       </View>
       {/* A leading-character-truncation bug was reported here ("3.2%"
-          rendering as ".2%", "16m 2s" as "16 2s", "Direct" as "irect") and
-          confirmed real (not a viewer artifact — checked the raw PDF text
-          layer directly). Root cause not fully closed: the best working
-          theory is a rare async race in @react-pdf/renderer's browser
-          font-loading path — layout runs before the custom Inter font is
-          100% ready, so a handful of glyphs get measured/placed wrong.
-          exportBriefingPDF now explicitly awaits Font.load() for every
-          weight before rendering, which should close that window, but it
-          has recurred at least once since that fix shipped (0/24 in a
-          repeated real-Chrome batch after the fix — genuinely rare, not
-          reliably reproducible on demand). Treat this as still open, not
-          resolved, if it's reported again: get the actual .pdf file (not a
-          screenshot) and check the raw text layer first. A related but
-          DIFFERENT-looking symptom — "(direct) / (none)" rendering as
-          garbled multi-line text with a spurious hyphen — only happens on
-          string values that need to wrap to a 3rd+ line in this ~93pt-wide
-          box, tracing to @react-pdf/textkit's "best fit" line-breaking
-          fallback (applyBestFit/getNextBreakpoint in
-          node_modules/@react-pdf/textkit — not this file); kpiValueClamped
-          below caps string KPI values at 2 lines specifically to keep them
-          out of that fallback path. Also 0/24 in the same batch, so
-          unconfirmed whether it still fully prevents it. */}
-      <Text style={[styles.kpiValue, typeof fact.value === "string" ? styles.kpiValueClamped : undefined]}>
-        {fact.value}
-        {fact.unit ?? ""}
+          rendering as ".2%", "16m 2s" as "16 2s", "Direct" as "irect",
+          "42" as "2", "266" as "66", "(direct) / (none)" as
+          "(irect) / (none)") and confirmed real (not a viewer artifact —
+          checked the raw PDF text layer directly). Root cause not fully
+          closed. What's been ruled out: our own code (no substring/slice
+          operation touches fact.value anywhere in this file — verified
+          again 2026-08-27); the Font.load() mitigation being a no-op
+          (traced through @react-pdf/font's source — Font.register() and
+          Font.load() operate on the exact same FontFamily/FontSource
+          singleton, and _load() does a real synchronous fontkit.create()
+          parse before its promise resolves, so the wait is real, not
+          fake). Current best evidence: this matches two still-OPEN
+          upstream issues in react-pdf's own repo as of v4.9.0 (three minor
+          releases ahead of the v4.6.0 pinned here) —
+          github.com/diegomura/react-pdf/issues/2789 (leading characters
+          silently dropped under specific character-class conditions) and
+          .../issues/3295 (a string-length/character-count desync in the
+          text-layout engine dropping characters) — i.e. this looks like a
+          genuine defect inside @react-pdf/textkit's run-layout code
+          (layoutRun/generateGlyphs in node_modules/@react-pdf/textkit),
+          not something reachable by tuning this component's styles, box
+          widths, or font loading. If reported again: get the actual .pdf
+          file (not a screenshot) and check the raw text layer first.
+
+          Mitigation below (2026-08-27, unverified — could not reproduce
+          the browser-only race in this session to confirm it closes the
+          window, only that it doesn't regress normal rendering): fact.value
+          and fact.unit are each given their own nested <Text>, instead of
+          being two bare string children of one <Text>. This stops
+          react-pdf's fragment-merging from concatenating them into a
+          single run sharing one start/end index pair — if the bug is an
+          off-by-one in that index arithmetic, isolating each value removes
+          one place it can happen. Keep this comment if the bug recurs
+          despite it — that means this run-isolation didn't close it either,
+          and the fix has to happen upstream in @react-pdf/textkit. */}
+      <Text
+        style={[styles.kpiValue, typeof fact.value === "string" ? styles.kpiValueClamped : undefined]}
+      >
+        <Text>{fact.value}</Text>
+        {fact.unit ? <Text>{fact.unit}</Text> : null}
       </Text>
       {fact.delta ? (
         <View style={styles.kpiDeltaRow}>

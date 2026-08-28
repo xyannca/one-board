@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode, ComponentType } from "react";
-import { detectAnomalies, detectSustainedTrend } from "./api/ai-narrative/_lib/anomalies";
+import { detectAnomalies } from "./api/ai-narrative/_lib/anomalies";
 import type { AiNarrativeFact, AiAnomaly, AiNarrativeResult } from "../types/ai-narrative";
-import type { BriefingData, BriefingFact, BriefingRisk, DrilldownTable, Status } from "../components/ExecutiveBriefingPDF";
-import type { ExcelDepartment, ExcelMetricKey, ExcelRowClassification } from "../types/excel-blend";
+import type { BriefingData, BriefingFact, BriefingRisk, ComparisonChart, DrilldownTable, Status } from "../components/ExecutiveBriefingPDF";
+import type { ChartSpec, ColumnProfile } from "../types/kpi-spec";
+import { profileColumns, sampleRows as sampleRowsForProfile } from "./api/kpi-suggest/_lib/columnProfiler";
+import { computeChartSpec } from "./api/kpi-suggest/_lib/aggregationEngine";
 import * as XLSX from "xlsx";
 import {
   ResponsiveContainer,
@@ -62,9 +64,6 @@ import {
   X,
   Lock,
   Upload,
-  UserMinus,
-  GraduationCap,
-  UserPlus,
   Sun,
   Moon,
   Loader2,
@@ -110,39 +109,13 @@ type OperationsData = {
   queryMs?: number;
 };
 
-type HRFact = {
-  id: string;
-  metric: string;
-  value: number | string;
-  unit?: string;
-  delta?: { value: number; direction: "up" | "down"; period: string };
-  context?: string;
-};
-
-type HRData = {
-  source: "sample";
-  meta: { label: string; generatedAt: string; note: string };
-  facts: HRFact[];
-  monthlySnapshot: {
-    month: string;
-    headcount: number;
-    hires: number;
-    terminations: number;
-    attritionRate: number;
-    complianceRate: number;
-  }[];
-  companyTargets: { attritionTargetMax: number; complianceTargetMin: number };
-  queryMs?: number;
-};
-
-
-const TABS = ["Executive", "Marketing", "Operations", "HR"] as const;
+const TABS = ["Executive", "Marketing", "Operations", "Custom Data"] as const;
 type Tab = (typeof TABS)[number];
 const TAB_LABELS: Record<Tab, string> = {
   Executive: "Executive View",
   Marketing: "Marketing & Funnel",
   Operations: "Operations & Diagnostics",
-  HR: "HR View"
+  "Custom Data": "Custom Data"
 };
   
 const RANGES = [
@@ -153,6 +126,18 @@ const RANGES = [
 type Range = (typeof RANGES)[number]["value"];
 
 const DEFAULT_RANGE: Range = "30d";
+
+// Export Report is temporarily hidden from the UI (not removed) — the
+// underlying react-pdf/textkit character-dropping bug (see the extensive
+// comment on KPICard in components/ExecutiveBriefingPDF.tsx) only affects
+// the PDF export path, never the on-screen dashboard, so the safest
+// mitigation is to stop users from triggering that path at all until
+// there's real upstream progress. ExecutiveBriefingPDF.tsx, every
+// *ToBriefing adapter (executiveToBriefing/marketingToBriefing/
+// operationsToBriefing/customDataToBriefing), and handleExportBriefing
+// are all left fully intact — flip this back to true to re-expose the
+// button once it's safe to.
+const EXPORT_REPORT_ENABLED = false;
 
 /* ============== Design tokens ============== */
 
@@ -215,6 +200,14 @@ function formatDuration(seconds: number) {
   const m = Math.floor(seconds / 60);
   const s = Math.round(seconds % 60);
   return `${m}m ${s}s`;
+}
+
+// The one formatting function every whole-number display in the app goes
+// through — KPI cards and bar chart value labels alike — so the same kind
+// of number never shows thousands separators in one place and not the
+// other for no reason.
+function formatInteger(n: number): string {
+  return Math.round(n).toLocaleString();
 }
 
 function useGa4<T>(endpoint: string, range: Range) {
@@ -468,7 +461,7 @@ function KpiCard({
       ? displayValue
       : decimals > 0
         ? animated.toFixed(decimals)
-        : Math.round(animated).toLocaleString();
+        : formatInteger(animated);
 
   return (
     <div
@@ -482,7 +475,14 @@ function KpiCard({
       }}
     >
       <div className="flex items-center justify-between mb-3">
-        <p className="text-[11px] font-bold uppercase tracking-wider truncate" style={{ color: COLORS.inkSoft }}>
+        {/* Was a single-line `truncate` — a long title (e.g. an
+            AI-suggested Custom Data KPI name) got cut to an unreadable
+            fragment with "…" after just a few words. line-clamp-2 lets it
+            wrap onto a second line first, only falling back to ellipsis if
+            it's still too long after that — same "wrap before you
+            truncate" approach already used for long string values in
+            ExecutiveBriefingPDF.tsx's kpiValueClamped. */}
+        <p className="text-[11px] font-bold uppercase tracking-wider line-clamp-2" style={{ color: COLORS.inkSoft }}>
           {label}
         </p>
         <div
@@ -500,7 +500,7 @@ function KpiCard({
             color: COLORS.ink,
             fontVariantNumeric: "tabular-nums",
             letterSpacing: "-0.02em",
-            fontSize: displayValue !== undefined ? 22 : 30,
+            fontSize: 15,
           }}
         >
           {shown}
@@ -550,6 +550,7 @@ function BarListChart({
   barColor,
   emptyLabel = "No data in this range.",
   className = "",
+  decimals,
 }: {
   title: string;
   icon?: IconType;
@@ -557,12 +558,20 @@ function BarListChart({
   barColor?: string;
   emptyLabel?: string;
   className?: string;
+  // When set to 2, the value label is formatted to exactly 2 decimal
+  // places (toFixed) instead of as a whole number — e.g. Custom Data's
+  // sum/avg-over-a-decimal-column results, which must always show 2
+  // digits (0.50, not 0.5). Every other caller displays whole numbers, via
+  // the same formatInteger() a KPI card uses — never left unformatted.
+  decimals?: number;
 }) {
   const chartData = rows.map((r) => ({
     label: r.label.length > 26 ? r.label.slice(0, 24) + "…" : r.label,
     value: r.value,
   }));
   const height = Math.max(120, chartData.length * 38);
+  const labelFormatter = (v: string | number | boolean | null | undefined) =>
+    typeof v === "number" ? (decimals !== undefined ? v.toFixed(decimals) : formatInteger(v)) : v;
 
   return (
     <Card title={title} icon={icon} className={className}>
@@ -572,8 +581,12 @@ function BarListChart({
         </p>
       ) : (
         <ResponsiveContainer width="100%" height={height}>
-          <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 36, top: 4, bottom: 4 }}>
-            <XAxis type="number" hide />
+          <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 44, top: 4, bottom: 4 }}>
+            {/* Longest bar is scaled to 90% of the plot width (not 100%) so
+                its value label — drawn just past the bar's end — always has
+                real room to its right instead of running into the plot's
+                edge, on top of the fixed right margin above. */}
+            <XAxis type="number" hide domain={[0, (dataMax: number) => (dataMax > 0 ? dataMax / 0.9 : 1)]} />
             <YAxis
               type="category"
               dataKey="label"
@@ -588,6 +601,7 @@ function BarListChart({
               <LabelList
                 dataKey="value"
                 position="right"
+                formatter={labelFormatter}
                 style={{ fill: COLORS.ink, fontSize: 12, fontWeight: 600 }}
               />
             </Bar>
@@ -796,103 +810,50 @@ function RawPayloadModal({ payload, onClose }: { payload: unknown; onClose: () =
 
 /* ============== Source panel (real GA4 status, real Excel file picker) ============== */
 
-type ExcelState = {
+type CustomDataState = {
   connected: boolean;
   filename: string | null;
   rows: number | null;
   source: "upload" | "demo" | null;
+  // Full parsed dataset — the aggregation engine always computes from this,
+  // never from the small sample sent to /api/kpi-suggest.
   data: Record<string, unknown>[] | null;
-  // Classification runs ONCE, right after parsing, via /api/excel-classify
-  // — never per-report. `classified` is persisted (see EXCEL_BLEND_STORAGE_KEY)
-  // so a page reload reuses it instead of calling the AI again.
-  classified: ExcelRowClassification[] | null;
-  classifying: boolean;
-  classifyError: string | null;
+  profile: ColumnProfile[] | null;
+  // KPI/chart suggestion runs ONCE, right after parsing, via
+  // /api/kpi-suggest — never per-render. The actual numbers are computed
+  // separately, in code, from the full dataset (see aggregationEngine.ts).
+  specs: ChartSpec[] | null;
+  suggesting: boolean;
+  suggestError: string | null;
 };
 
-const EXCEL_BLEND_STORAGE_KEY = "oneboard-excel-blend-v1";
-
-// One shared selector every tab uses to read only the rows AI tagged as
-// its own department — no tab ever reads another department's rows.
-function selectDeptRows(excel: ExcelState, department: ExcelDepartment): Record<string, unknown>[] {
-  if (!excel.data || !excel.classified) return [];
-  const idx = new Set(
-    excel.classified.filter((c) => c.department === department).map((c) => c.rowIndex)
-  );
-  return excel.data.filter((_, i) => idx.has(i));
-}
-
-// Finds the first candidate column present in a row (case/whitespace
-// insensitive) — same "don't assume exact header spelling" approach
-// already used by matchExcelChannelTargets, shared here so the
-// metric/target_value schema (Operations/HR/Executive) uses one lookup,
-// not three copies.
-function findColumn(sampleKeys: string[], candidates: string[]): string | undefined {
-  return sampleKeys.find((k) => candidates.includes(k.trim().toLowerCase()));
-}
-
-const TARGET_VALUE_CANDIDATES = ["target_value", "target value", "target", "goal", "value"];
-
-// Looks up a single metricKey's target value among a department's
-// classified rows (used by HR's override and by matchExcelMetricTargets
-// below). Returns null — never a guessed/default number — if no row with
-// that metricKey exists or its target_value column can't be parsed.
-function findMetricTargetFromExcel(excel: ExcelState, metricKey: ExcelMetricKey): number | null {
-  if (!excel.data || !excel.classified) return null;
-  const match = excel.classified.find((c) => c.metricKey === metricKey);
-  if (!match) return null;
-  const row = excel.data[match.rowIndex];
-  if (!row) return null;
-  const key = findColumn(Object.keys(row), TARGET_VALUE_CANDIDATES);
-  if (!key) return null;
-  const value = Number(row[key]);
-  return Number.isFinite(value) ? value : null;
-}
-
-function summarizeClassification(classified: ExcelRowClassification[]): string {
-  const labels: Record<string, string> = {
-    marketing: "Marketing",
-    operations: "Operations",
-    hr: "HR",
-    executive: "Executive",
-  };
-  const counts = new Map<string, number>();
-  for (const c of classified) {
-    const key = c.department ?? "unclassified";
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  const order = ["marketing", "operations", "hr", "executive", "unclassified"];
-  return order
-    .filter((k) => counts.has(k))
-    .map((k) => `${counts.get(k)} ${labels[k] ?? "unclassified"}`)
-    .join(" · ");
+// Single source of truth for "has the Custom Data tab actually finished
+// rendering something" — Custom Data never writes into `latestData` (it
+// has its own local state, not a GA4 fetch), so anything that gates on
+// "has this tab loaded" (e.g. Export Report) must check this instead of
+// latestData, or it wrongly reports the tab as still loading even after
+// its KPI cards are on screen.
+function isCustomDataReady(state: CustomDataState): boolean {
+  return state.connected && !!state.data && !!state.specs && state.specs.length > 0;
 }
 
 function SourcePanel({
   activeEndpoint,
-  excel,
-  onExcelFileSelect,
-  hrActive,
-  activeDepartment,
+  customData,
+  onFileSelect,
+  customDataActive,
 }: {
   activeEndpoint: string;
-  excel: ExcelState;
-  onExcelFileSelect: (file: File) => void;
-  hrActive: boolean;
-  activeDepartment: ExcelDepartment;
+  customData: CustomDataState;
+  onFileSelect: (file: File) => void;
+  customDataActive: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   // Border highlight only indicates which source the CURRENT tab is
   // reading from. It does not imply the other source is broken or
   // unavailable — GA4 stays fully "live" in its own copy for the other
   // three tabs regardless of which tab is active right now.
-  //
-  // Which tab "reads from" the blended file is now decided by the AI
-  // classifier, not hardcoded to one tab — highlight whenever the
-  // currently active tab actually has classified rows, or while
-  // classification is still in flight for a just-uploaded file.
-  const activeDeptHasRows = (excel.classified ?? []).some((c) => c.department === activeDepartment);
-  const excelBorderActive = excel.classifying || activeDeptHasRows;
+  const excelBorderActive = customData.suggesting || customDataActive;
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -902,7 +863,7 @@ function SourcePanel({
         className="ob-ga4-card rounded-2xl p-4 hover:-translate-y-0.5"
         style={{
           background: `linear-gradient(to bottom, ${COLORS.surface}, ${COLORS.accentSoft})`,
-          border: hrActive ? `1px solid ${COLORS.line}` : `1px solid var(--color-accent-border)`,
+          border: customDataActive ? `1px solid ${COLORS.line}` : `1px solid var(--color-accent-border)`,
           boxShadow: SHADOW,
           backdropFilter: "blur(14px)",
           WebkitBackdropFilter: "blur(14px)",
@@ -929,10 +890,10 @@ function SourcePanel({
         </div>
       </div>
 
-      {/* Excel / CSV — border highlights on HR tab (same data-source
-          category) or when the person has actually uploaded a file.
-          Text content reflects the REAL upload state only — it never
-          claims a sample dataset is "connected" via upload. */}
+      {/* Excel / CSV — border highlights on the Custom Data tab (same
+          data-source category) or while a just-uploaded file is being
+          profiled. Text content reflects the REAL upload state only — it
+          never claims a sample dataset is "connected" via upload. */}
       <div
         onClick={() => inputRef.current?.click()}
         className="ob-excel-card rounded-2xl p-4 cursor-pointer hover:-translate-y-0.5"
@@ -952,7 +913,7 @@ function SourcePanel({
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];
-            if (file) onExcelFileSelect(file);
+            if (file) onFileSelect(file);
           }}
         />
         <div className="flex items-center justify-between mb-2">
@@ -962,15 +923,15 @@ function SourcePanel({
           <span
             className="px-2.5 py-0.5 text-[10px] font-bold rounded-full"
             style={{
-              background: excel.connected ? COLORS.accentSoft : COLORS.track,
-              color: excel.connected ? COLORS.accent : COLORS.inkSoft,
+              background: customData.connected ? COLORS.accentSoft : COLORS.track,
+              color: customData.connected ? COLORS.accent : COLORS.inkSoft,
             }}
           >
-            {excel.connected ? (excel.source === "demo" ? "Demo Loaded" : "File Selected") : "Import Mode"}
+            {customData.connected ? (customData.source === "demo" ? "Demo Loaded" : "File Selected") : "Import Mode"}
           </span>
         </div>
         <p className="text-xs font-medium truncate" style={{ color: COLORS.inkSoft }}>
-          {excel.filename ?? "Click to blend offline baseline target spreadsheet"}
+          {customData.filename ?? "Click to auto-generate KPIs from any spreadsheet"}
         </p>
         <div
           className="ob-excel-cta mt-3 text-[11px] font-semibold flex items-center gap-1.5"
@@ -978,17 +939,17 @@ function SourcePanel({
         >
           <Upload size={13} />
           <span>
-            {excel.connected
-              ? excel.classifying
-                ? `${excel.rows ?? "…"} rows parsed — classifying with AI…`
-                : excel.classified
-                ? `${excel.rows ?? excel.classified.length} rows parsed — ${summarizeClassification(excel.classified)}`
-                : excel.classifyError
-                ? "Classification failed — see error above"
-                : excel.rows !== null
-                ? `${excel.rows} rows parsed from ${excel.filename ?? "file"} — ready to blend`
+            {customData.connected
+              ? customData.suggesting
+                ? `${customData.rows ?? "…"} rows parsed — suggesting KPIs…`
+                : customData.specs
+                ? `${customData.rows ?? customData.data?.length ?? 0} rows parsed — ${customData.specs.length} KPI card${customData.specs.length === 1 ? "" : "s"} generated`
+                : customData.suggestError
+                ? "KPI suggestion failed — see error above"
+                : customData.rows !== null
+                ? `${customData.rows} rows parsed from ${customData.filename ?? "file"}`
                 : "File selected — ready to parse"
-              : "+ Upload Offline Dataset (.xlsx/.csv)"}
+              : "+ Upload Data File (.xlsx/.xls/.csv)"}
           </span>
         </div>
       </div>
@@ -1584,20 +1545,7 @@ function CrossDeptWatchSummary({ groups }: { groups: DeptWatchGroup[] }) {
               <span className="text-xs font-bold uppercase tracking-wider" style={{ color: COLORS.ink }}>
                 {g.label}
               </span>
-              {g.targetRatio && (
-                <span
-                  className="text-xs font-semibold"
-                  style={{ color: g.targetRatio.onTarget === g.targetRatio.total ? COLORS.up : COLORS.amberInk }}
-                >
-                  {g.targetRatio.onTarget}/{g.targetRatio.total} metrics on target
-                </span>
-              )}
             </div>
-            {g.targetRatio && g.targetRatio.misses.length > 0 && (
-              <p className="text-xs mb-2" style={{ color: COLORS.inkFaint }}>
-                Off target: {g.targetRatio.misses.join(", ")}
-              </p>
-            )}
             {g.anomalies.map((a) => {
               const status = anomalySeverityToStatus(a.severity);
               const color = status === "critical" ? COLORS.down : COLORS.amberInk;
@@ -1629,8 +1577,6 @@ function ExecutiveView({
   narrative,
   marketingData,
   operationsData,
-  hrData,
-  excel,
 }: {
   range: Range;
   onData?: (data: ExecutiveData, clientMs?: number) => void;
@@ -1638,8 +1584,6 @@ function ExecutiveView({
   narrative?: AiNarrativeResult;
   marketingData?: MarketingData;
   operationsData?: OperationsData;
-  hrData?: HRData;
-  excel?: ExcelState;
 }) {
 
   const { data, error, isFetching, clientMs } = useGa4<ExecutiveData>("/api/ga4/executive", range);
@@ -1664,10 +1608,9 @@ function ExecutiveView({
 
   // Cross-department facts for the Executive AI Narrative — Option B:
   // KPI cards above stay untouched, only the AI's input gets richer.
-  const executiveFacts = executiveCrossDeptFacts(data, range, marketingData, operationsData, hrData);
-  const { anomalies: executiveAnomalies, context: executiveContext } = hrData
-    ? hrAnomaliesAndContext(hrData)
-    : { anomalies: [] as AiAnomaly[], context: undefined as Record<string, number | string> | undefined };
+  const executiveFacts = executiveCrossDeptFacts(data, range, marketingData, operationsData);
+  const executiveAnomalies: AiAnomaly[] = [];
+  const executiveContext: Record<string, number | string> | undefined = undefined;
 
   return (
     
@@ -1801,38 +1744,9 @@ function ExecutiveView({
         />
       </div>
 
-      {(() => {
-        if (!excel?.classified) return null;
-        const deptRows = selectDeptRows(excel, "executive");
-        if (deptRows.length === 0) return null;
-        const matches = matchExcelMetricTargets(excel, [
-          { metricKey: "activeUsersTarget", label: "Active Users", actual: data.summary.activeUsers },
-          { metricKey: "sessionsTarget", label: "Sessions", actual: data.summary.sessions },
-          {
-            metricKey: "engagementRateTarget",
-            label: "Engagement Rate",
-            actual: Math.round(data.summary.engagementRate * 100),
-          },
-        ]);
-        if (!matches) return null;
-        return (
-          <div className="mt-4">
-            <TargetBlendCard
-              title="Executive Metrics vs. Excel Baseline Target"
-              rows={matches.map((m) => ({
-                ...m,
-                display: m.label === "Engagement Rate" ? (n: number) => `${n}%` : undefined,
-              }))}
-              totalRows={deptRows.length}
-              unmatchedNote="metric not tracked on this dashboard"
-            />
-          </div>
-        );
-      })()}
-
       <div className="mt-4">
         <CrossDeptWatchSummary
-          groups={buildCrossDeptWatchGroups(marketingData, operationsData, hrData, excel)}
+          groups={buildCrossDeptWatchGroups(marketingData, operationsData)}
         />
       </div>
 
@@ -1943,137 +1857,16 @@ function ChannelRadar({ channels }: { channels: { channel: string; sessions: num
   );
 }
 
-// Matches parsed Excel/CSV rows against the real, already-fetched GA4
-// channel sessions. This is the actual "blend" step — it was previously
-// missing entirely, which is why uploading or loading a baseline file had
-// zero visible effect anywhere on the dashboard (excel.data was parsed and
-// stored in state, but no view ever read it).
-//
-// Column matching is intentionally loose on NAME (a few common header
-// spellings) but strict on VALUE: a row only produces a comparison if its
-// channel text exact-matches (case-insensitive) a channel GA4 actually
-// reported this period. Unmatched rows are surfaced as a count, never
-// silently dropped or guessed at — same "don't invent it" rule as the
-// PDF briefings.
-function matchExcelChannelTargets(
-  rows: Record<string, unknown>[] | null,
-  channels: { channel: string; sessions: number }[]
-): { channel: string; actual: number; target: number; onTrack: boolean }[] | null {
-  if (!rows || rows.length === 0 || channels.length === 0) return null;
-
-  const channelKeyCandidates = ["channel", "channel group", "source", "medium"];
-  const targetKeyCandidates = ["target_sessions", "target sessions", "target", "goal", "goal_sessions"];
-
-  const sampleKeys = Object.keys(rows[0] ?? {});
-  const channelKey = sampleKeys.find((k) => channelKeyCandidates.includes(k.trim().toLowerCase()));
-  const targetKey = sampleKeys.find((k) => targetKeyCandidates.includes(k.trim().toLowerCase()));
-  if (!channelKey || !targetKey) return null;
-
-  const byChannel = new Map(channels.map((c) => [c.channel.trim().toLowerCase(), c.sessions]));
-
-  // onTrack computed once here — reused by TargetBlendCard's bars AND the
-  // cross-department Watch Items summary, so the two can never disagree
-  // about whether a channel hit its target.
-  const matched: { channel: string; actual: number; target: number; onTrack: boolean }[] = [];
-  for (const row of rows) {
-    const name = String(row[channelKey] ?? "").trim();
-    const target = Number(row[targetKey]);
-    if (!name || !Number.isFinite(target)) continue;
-    const actual = byChannel.get(name.toLowerCase());
-    if (actual === undefined) continue; // real rule: no match, no row — never guess
-    matched.push({ channel: name, actual, target, onTrack: actual >= target });
-  }
-  return matched.length > 0 ? matched : null;
-}
-
-// Generic actual-vs-target bar comparison — used by Marketing (rows keyed
-// by channel name), Operations, and Executive (rows keyed by metric
-// label). Same rendering regardless of caller; only the title/footnote
-// text differ.
-function TargetBlendCard({
-  title,
-  rows,
-  totalRows,
-  unmatchedNote,
-}: {
-  title: string;
-  // onTrack is computed by the matcher (matchExcelChannelTargets /
-  // matchExcelMetricTargets), not here — this card and the
-  // cross-department Watch Items summary both read the same value instead
-  // of each re-deriving actual-vs-target (and the lowerIsBetter direction)
-  // independently.
-  rows: { label: string; actual: number; target: number; onTrack: boolean; display?: (n: number) => string }[];
-  totalRows: number;
-  unmatchedNote: string;
-}) {
-  const unmatched = totalRows - rows.length;
-  return (
-    <Card title={title} icon={FileSpreadsheet}>
-      <div className="space-y-3">
-        {rows.map((r) => {
-          const max = Math.max(r.actual, r.target, 1);
-          const onTrack = r.onTrack;
-          const statusColor = onTrack ? COLORS.up : COLORS.amberInk;
-          const fmt = r.display ?? ((n: number) => String(n));
-          return (
-            <div key={r.label}>
-              <div className="flex items-center justify-between text-xs font-semibold mb-1">
-                <span style={{ color: COLORS.ink }}>{r.label}</span>
-                <span style={{ color: statusColor }}>
-                  {fmt(r.actual)} / {fmt(r.target)} target {onTrack ? "▲" : "▼"}
-                </span>
-              </div>
-              <div className="flex gap-1">
-                <div className="h-2 rounded-full flex-1" style={{ background: COLORS.track }}>
-                  <div
-                    className="h-2 rounded-full"
-                    style={{ width: `${Math.min(100, (r.actual / max) * 100)}%`, background: statusColor }}
-                  />
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <p className="text-[11px] mt-3" style={{ color: COLORS.inkFaint }}>
-        {rows.length} of {totalRows} baseline row{totalRows === 1 ? "" : "s"} matched{unmatched > 0 ? ` — ${unmatched} unmatched (${unmatchedNote})` : "."}
-      </p>
-    </Card>
-  );
-}
-
-// Operations/Executive share the "metric,target_value" schema — this one
-// matcher looks up each of a caller's known fields by metricKey among a
-// department's classified rows. Never invents a comparison row: a field
-// with no matching classified row (or an unparseable target_value) is
-// simply omitted, same "no match, no row" rule as the channel matcher.
-function matchExcelMetricTargets(
-  excel: ExcelState,
-  fields: { metricKey: ExcelMetricKey; label: string; actual: number; lowerIsBetter?: boolean }[]
-): { label: string; actual: number; target: number; onTrack: boolean; lowerIsBetter?: boolean }[] | null {
-  if (!excel.classified) return null;
-  const rows: { label: string; actual: number; target: number; onTrack: boolean; lowerIsBetter?: boolean }[] = [];
-  for (const f of fields) {
-    const target = findMetricTargetFromExcel(excel, f.metricKey);
-    if (target === null) continue;
-    const onTrack = f.lowerIsBetter ? f.actual <= target : f.actual >= target;
-    rows.push({ label: f.label, actual: f.actual, target, onTrack, lowerIsBetter: f.lowerIsBetter });
-  }
-  return rows.length > 0 ? rows : null;
-}
-
 function MarketingView({
   range,
   onData,
   onNarrative,
   narrative,
-  excel,
 }: {
   range: Range;
   onData?: (data: MarketingData, clientMs?: number) => void;
   onNarrative?: (result: AiNarrativeResult) => void;
   narrative?: AiNarrativeResult;
-  excel?: ExcelState;
 }) {
   const { data, error, isFetching, clientMs } = useGa4<MarketingData>("/api/ga4/marketing", range);
 
@@ -2164,24 +1957,6 @@ function MarketingView({
         />
       </div>
 
-      {(() => {
-        if (!excel?.classified) return null;
-        const deptRows = selectDeptRows(excel, "marketing");
-        if (deptRows.length === 0) return null;
-        const matches = matchExcelChannelTargets(deptRows, data.channels ?? []);
-        if (!matches) return null;
-        return (
-          <div className="mt-4">
-            <TargetBlendCard
-              title="Channel Sessions vs. Excel Baseline Target"
-              rows={matches.map((m) => ({ label: m.channel, actual: m.actual, target: m.target, onTrack: m.onTrack }))}
-              totalRows={deptRows.length}
-              unmatchedNote="no live sessions for that channel name"
-            />
-          </div>
-        );
-      })()}
-
       <div className="mt-4">
         {(() => {
           const { anomalies, context } = marketingAnomaliesAndContext(data);
@@ -2209,13 +1984,11 @@ function OperationsView({
   onData,
   onNarrative,
   narrative,
-  excel,
 }: {
   range: Range;
   onData?: (data: OperationsData, clientMs?: number) => void;
   onNarrative?: (result: AiNarrativeResult) => void;
   narrative?: AiNarrativeResult;
-  excel?: ExcelState;
 }) {
 
   const { data, error, isFetching, clientMs } = useGa4<OperationsData>("/api/ga4/operations", range);
@@ -2396,39 +2169,6 @@ function OperationsView({
         </div>
       </div>
 
-      {(() => {
-        if (!excel?.classified) return null;
-        const deptRows = selectDeptRows(excel, "operations");
-        if (deptRows.length === 0) return null;
-        const matches = matchExcelMetricTargets(excel, [
-          {
-            metricKey: "bounceRateTarget",
-            label: "Bounce Rate",
-            actual: Math.round(data.summary.bounceRate * 100),
-            lowerIsBetter: true,
-          },
-          {
-            metricKey: "avgEngagementDurationTargetSeconds",
-            label: "Avg. Engagement Duration",
-            actual: data.summary.avgSessionDuration,
-          },
-        ]);
-        if (!matches) return null;
-        return (
-          <div className="mt-4">
-            <TargetBlendCard
-              title="Operations Metrics vs. Excel Baseline Target"
-              rows={matches.map((m) => ({
-                ...m,
-                display: m.label === "Avg. Engagement Duration" ? formatDuration : (n: number) => `${n}%`,
-              }))}
-              totalRows={deptRows.length}
-              unmatchedNote="metric not tracked on this dashboard"
-            />
-          </div>
-        );
-      })()}
-
       <div className="mt-4">
         <AiNarrativeCard
           facts={operationsToBriefing(data, range).kpis}
@@ -2441,304 +2181,161 @@ function OperationsView({
   );
 }
 
-function monthLabel(m: string) {
-  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const mo = Number(m.split("-")[1]);
-  return names[mo - 1] ?? m;
+/* ============== Custom Data ============== */
+// One dedicated tab for any uploaded file, regardless of shape. No fixed
+// department/metricKey schema: the file's columns are profiled in code
+// (columnProfiler.ts), AI suggests a handful of KPI/chart specs from that
+// profile alone (never the full dataset), then every number actually
+// shown is computed in code from the FULL uploaded dataset
+// (aggregationEngine.ts) — the AI only ever chose what to compute and how.
+
+function TrendLineChart({ title, rows }: { title: string; rows: { label: string; value: number }[] }) {
+  return (
+    <Card title={title} icon={TrendingUp}>
+      {rows.length === 0 ? (
+        <p className="text-sm" style={{ color: COLORS.inkFaint }}>
+          No data to chart.
+        </p>
+      ) : (
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={rows} margin={{ top: 4, right: 24, bottom: 0, left: -16 }}>
+            <CartesianGrid stroke={COLORS.line} vertical={false} strokeDasharray="3 3" />
+            <XAxis
+              dataKey="label"
+              fontSize={11}
+              stroke={COLORS.inkFaint}
+              tickLine={false}
+              axisLine={false}
+              interval={tickInterval(rows.length)}
+              padding={{ right: 16 }}
+            />
+            <YAxis fontSize={11} stroke={COLORS.inkFaint} tickLine={false} axisLine={false} allowDecimals={false} />
+            <Tooltip content={<ChartTooltip />} />
+            <Line type="monotone" dataKey="value" stroke={COLORS.accent} strokeWidth={2} dot={rows.length <= 12} />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
+    </Card>
+  );
 }
 
-function hrFactVisual(id: string): { icon: IconType; color: string; bg: string } {
-  if (id === "headcount") return { icon: Users, color: COLORS.accent, bg: COLORS.accentSoft };
-  if (id === "attrition") return { icon: UserMinus, color: COLORS.down, bg: COLORS.downSoft };
-  if (id === "compliance") return { icon: GraduationCap, color: COLORS.blue, bg: COLORS.blueSoft };
-  return { icon: UserPlus, color: COLORS.indigo, bg: COLORS.indigoSoft };
-}
+function CustomDataView({
+  state,
+  onLoadDemo,
+  demoLoading,
+}: {
+  state: CustomDataState;
+  onLoadDemo: () => void;
+  demoLoading: boolean;
+}) {
+  if (!state.connected) {
+    return (
+      <div
+        className="rounded-2xl p-10 flex flex-col items-center text-center gap-3"
+        style={{ background: COLORS.surface, border: `1px solid ${COLORS.line}`, boxShadow: SHADOW }}
+      >
+        <FileSpreadsheet size={28} color={COLORS.inkFaint} />
+        <p className="text-sm font-semibold" style={{ color: COLORS.ink }}>
+          Upload a spreadsheet to auto-generate KPIs
+        </p>
+        <p className="text-xs max-w-[480px]" style={{ color: COLORS.inkFaint }}>
+          OneBoard profiles the file's columns, asks AI to suggest a handful of KPI cards and
+          charts, then computes every number in code from your full dataset — nothing is
+          estimated or invented.
+        </p>
+        <p className="text-[11px] max-w-[480px]" style={{ color: COLORS.inkFaint }}>
+          .csv, .xlsx, or .xls · needs a header row + at least one data row · only the first sheet is read
+        </p>
+        <button
+          onClick={onLoadDemo}
+          disabled={demoLoading}
+          className="mt-2 text-xs font-bold px-4 py-2 rounded-xl flex items-center gap-2 transition active:scale-95 disabled:opacity-60"
+          style={{ background: COLORS.accentSoft, color: COLORS.accent, border: "1px solid transparent" }}
+        >
+          <FileSpreadsheet size={14} />
+          {demoLoading ? "Loading…" : "Load Sample Data"}
+        </button>
+      </div>
+    );
+  }
 
-function HrFactCard({ fact }: { fact: HRFact }) {
-  const { icon: Icon, color, bg } = hrFactVisual(fact.id);
-  // attrition/compliance deltas are stored as percentage-point (pp)
-  // differences, not relative percent change — see hrFacts.ts for why.
-  const isRateMetric = fact.id === "attrition" || fact.id === "compliance";
+  if (state.suggesting) {
+    return (
+      <div>
+        <SkeletonKpiRow count={4} />
+        <SkeletonChartGrid count={2} />
+      </div>
+    );
+  }
 
-  // "up" isn't always good: rising attrition is bad, rising compliance is
-  // good. Flag metrics where a rise should read as a warning, not progress —
-  // same inversion concept as the DeltaBadge component's `invert` prop used
-  // elsewhere in this file (e.g. bounce rate).
-  const invertGoodDirection = fact.id === "attrition";
-  const isFlat = fact.delta ? fact.delta.value === 0 : false;
-  const isUp = fact.delta?.direction === "up";
-  const isGood = isFlat ? null : invertGoodDirection ? !isUp : isUp;
-  const deltaColor = isFlat ? COLORS.inkFaint : isGood ? COLORS.up : COLORS.teal;
-  const deltaArrow = isFlat ? "" : isUp ? "▲" : "▼";
-  const deltaLabel = fact.delta
-    ? `${deltaArrow}${deltaArrow ? " " : ""}${fact.delta.value}${isRateMetric ? "pp" : "%"} MoM`
-    : null;
+  if (state.suggestError) {
+    return <ErrorBox message={state.suggestError} />;
+  }
+
+  if (!state.specs || state.specs.length === 0 || !state.data) {
+    return (
+      <p className="text-sm" style={{ color: COLORS.inkFaint }}>
+        No KPI suggestions could be generated for this file.
+      </p>
+    );
+  }
+
+  // Real computation, every render: the AI's specs are only a suggestion
+  // of what/how — the numbers themselves always come from the full parsed
+  // dataset, never the small sample sent to /api/kpi-suggest.
+  const results = state.specs.map((spec) => computeChartSpec(state.data!, spec, state.profile ?? undefined));
+  const kpiResults = results.filter((r) => r.spec.chartType === "kpi");
+  const chartResults = results.filter((r) => r.spec.chartType !== "kpi");
 
   return (
-    <div
-      className="rounded-2xl p-5 transition-shadow duration-200 hover:shadow-lg"
-      style={{
-        background: COLORS.surface,
-        border: `1px solid ${COLORS.line}`,
-        boxShadow: SHADOW,
-        backdropFilter: "blur(14px)",
-        WebkitBackdropFilter: "blur(14px)",
-      }}
-    >
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-[11px] font-bold uppercase tracking-wider truncate" style={{ color: COLORS.inkSoft }}>
-          {fact.metric}
-        </p>
-        <div className="w-6 h-6 rounded-full flex items-center justify-center shrink-0" style={{ background: bg }}>
-          <Icon size={13} strokeWidth={2.25} color={color} />
-        </div>
-      </div>
-
-      <p
-        className="font-extrabold leading-none truncate"
-        style={{ color: COLORS.ink, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em", fontSize: 30 }}
-      >
-        {fact.value}
-        {fact.unit ?? ""}
+    <div>
+      <p className="text-xs font-medium mb-4" style={{ color: COLORS.inkFaint }}>
+        {state.rows} row{state.rows === 1 ? "" : "s"} from {state.filename} · every number below
+        computed from the full file
       </p>
 
-      <div className="mt-2 h-5 flex items-center">
-        {deltaLabel ? (
-          <span className="text-xs font-semibold" style={{ color: deltaColor }}>
-            {deltaLabel}
-          </span>
-        ) : fact.context ? (
-          <span className="text-xs truncate font-medium" style={{ color: COLORS.inkFaint }}>
-            {fact.context}
-          </span>
-        ) : null}
-      </div>
-      {deltaLabel && fact.context && (
-        <p className="text-[11px] mt-1 truncate" style={{ color: COLORS.inkFaint }}>
-          {fact.context}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function HrTrendChart({ snapshot }: { snapshot: HRData["monthlySnapshot"] }) {
-  const chartData = snapshot.map((m) => ({
-    label: monthLabel(m.month),
-    attritionRate: m.attritionRate,
-    complianceRate: m.complianceRate,
-  }));
-  return (
-    <Card title="Attrition & Compliance Trend · Trailing 12 Months" icon={TrendingUp}>
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 4 }}>
-          <CartesianGrid stroke={COLORS.line} vertical={false} strokeDasharray="3 3" />
-          <XAxis dataKey="label" fontSize={11} stroke={COLORS.inkFaint} tickLine={false} axisLine={false} />
-          <YAxis
-            yAxisId="attrition"
-            fontSize={11}
-            stroke={COLORS.teal}
-            tickLine={false}
-            axisLine={false}
-            width={44}
-            tickFormatter={(v) => `${v}%`}
-          />
-          <YAxis
-            yAxisId="compliance"
-            orientation="right"
-            fontSize={11}
-            stroke={COLORS.blue}
-            tickLine={false}
-            axisLine={false}
-            width={50}
-            domain={['dataMin - 2', 'dataMax + 2']}
-            tickFormatter={(v) => `${v}%`}
-          />
-          <Tooltip content={<ChartTooltip />} />
-          <Line
-            yAxisId="attrition"
-            type="monotone"
-            dataKey="attritionRate"
-            name="Attrition %"
-            stroke={COLORS.teal}
-            strokeWidth={2}
-            dot={false}
-          />
-          <Line
-            yAxisId="compliance"
-            type="monotone"
-            dataKey="complianceRate"
-            name="Compliance %"
-            stroke={COLORS.blue}
-            strokeWidth={2}
-            dot={false}
-          />
-          <Legend
-            iconType="circle"
-            iconSize={7}
-            formatter={(value) => (
-              <span className="text-xs font-medium" style={{ color: COLORS.inkSoft }}>
-                {value}
-              </span>
-            )}
-          />
-        </LineChart>
-      </ResponsiveContainer>
-    </Card>
-  );
-}
-
-function HrHeadcountChart({ snapshot }: { snapshot: HRData["monthlySnapshot"] }) {
-  const chartData = snapshot.map((m) => ({
-    label: monthLabel(m.month),
-    hires: m.hires,
-    terminations: m.terminations,
-  }));
-  return (
-    <Card title="Hires vs. Terminations · Trailing 12 Months" icon={Users}>
-      <ResponsiveContainer width="100%" height={220}>
-        <BarChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
-          <CartesianGrid stroke={COLORS.line} vertical={false} strokeDasharray="3 3" />
-          <XAxis dataKey="label" fontSize={11} stroke={COLORS.inkFaint} tickLine={false} axisLine={false} />
-          <YAxis fontSize={11} stroke={COLORS.inkFaint} tickLine={false} axisLine={false} allowDecimals={false} />
-          <Tooltip content={<ChartTooltip />} />
-          <Bar dataKey="hires" name="New Hires" fill={COLORS.accent} radius={[6, 6, 0, 0]} barSize={10}  />
-          <Bar dataKey="terminations" name="Terminations" fill="#94A3B8" radius={[6, 6, 0, 0]} barSize={10} />
-          <Legend
-            iconType="circle"
-            iconSize={7}
-            formatter={(value) => (
-              <span className="text-xs font-medium" style={{ color: COLORS.inkSoft }}>
-                {value}
-              </span>
-            )}
-          />
-        </BarChart>
-      </ResponsiveContainer>
-    </Card>
-  );
-}
-
-function HRSkeleton() {
-  return (
-    <div>
-      <SkeletonKpiRow count={4} />
-      <SkeletonChartGrid count={2} />
-    </div>
-  );
-}
-
-// HR's default targets (companyTargets from /api/hr — 95%/8%, verified
-// and reused across this whole app: the PDF one-pager, the AI narrative's
-// anomaly thresholds, everything) stay the default. If the AI classified
-// any uploaded rows as HR's attritionTargetMax/complianceTargetMin, THOSE
-// numbers override the default — never the other way around, and never a
-// partial override that leaves the descriptive `context` string on the
-// fact quoting the OLD number while the pill/threshold logic uses the
-// NEW one. Mirrors the exact context formula from
-// app/api/hr/_lib/hrFacts.ts's computeHRFacts so the two can never drift.
-function mergeHrOverrides(data: HRData, excel?: ExcelState): HRData {
-  if (!excel?.classified) return data;
-  const attritionOverride = findMetricTargetFromExcel(excel, "attritionTargetMax");
-  const complianceOverride = findMetricTargetFromExcel(excel, "complianceTargetMin");
-  if (attritionOverride === null && complianceOverride === null) return data;
-
-  const companyTargets = {
-    attritionTargetMax: attritionOverride ?? data.companyTargets.attritionTargetMax,
-    complianceTargetMin: complianceOverride ?? data.companyTargets.complianceTargetMin,
-  };
-  const latest = data.monthlySnapshot[data.monthlySnapshot.length - 1];
-
-  return {
-    ...data,
-    companyTargets,
-    facts: data.facts.map((f) => {
-      if (f.id === "attrition" && latest) {
-        return {
-          ...f,
-          context:
-            latest.attritionRate <= companyTargets.attritionTargetMax
-              ? `Within internal target (<${companyTargets.attritionTargetMax}%)`
-              : `Above internal target (<${companyTargets.attritionTargetMax}%)`,
-        };
-      }
-      if (f.id === "compliance" && latest) {
-        return {
-          ...f,
-          context:
-            latest.complianceRate >= companyTargets.complianceTargetMin
-              ? `Meets internal target (>${companyTargets.complianceTargetMin}%)`
-              : `Below internal target (>${companyTargets.complianceTargetMin}%)`,
-        };
-      }
-      return f;
-    }),
-  };
-}
-
-function HRView({
-  onData,
-  onNarrative,
-  narrative,
-  excel,
-}: {
-  onData?: (data: HRData) => void;
-  onNarrative?: (result: AiNarrativeResult) => void;
-  narrative?: AiNarrativeResult;
-  excel?: ExcelState;
-}) {
-
-  const { data, error, isFetching } = useGa4<HRData>("/api/hr", "30d");
-  const mergedData = useMemo(() => (data ? mergeHrOverrides(data, excel) : null), [data, excel]);
-
-  useEffect(() => {
-    if (mergedData) onData?.(mergedData);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mergedData]);
-
-  if (error) return <ErrorBox message={error} />;
-  if (!mergedData || !data) return <HRSkeleton />;
-
-  const overrideActive = mergedData.companyTargets !== data.companyTargets;
-
-  return (
-    <div>
-      <RefreshingNote show={isFetching} />
-
-      {overrideActive && (
-        <p className="text-xs mb-3 flex items-center gap-1.5" style={{ color: COLORS.accent }}>
-          <FileSpreadsheet size={13} />
-          Target overridden by uploaded baseline — attrition ≤ {mergedData.companyTargets.attritionTargetMax}%
-          &nbsp;·&nbsp; compliance ≥ {mergedData.companyTargets.complianceTargetMin}%
-        </p>
-      )}
-
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        {mergedData.facts.map((f) => (
-          <HrFactCard key={f.id} fact={f} />
-        ))}
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-        <div id="ob-chart-hr">
-          <HrTrendChart snapshot={mergedData.monthlySnapshot} />
+      {kpiResults.length > 0 && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          {kpiResults.map((r, i) => {
+            const isNumeric = typeof r.value === "number";
+            return (
+              <KpiCard
+                key={i}
+                icon={Gauge}
+                iconColor={COLORS.accent}
+                iconBg={COLORS.accentSoft}
+                label={r.spec.title}
+                value={isNumeric ? (r.value as number) : 0}
+                decimals={isNumeric ? r.decimals : 0}
+                displayValue={isNumeric ? undefined : r.value === null ? "—" : String(r.value)}
+              />
+            );
+          })}
         </div>
-        <HrHeadcountChart snapshot={mergedData.monthlySnapshot} />
-      </div>
+      )}
 
-      {(() => {
-  const { anomalies, context } = hrAnomaliesAndContext(mergedData);
-  return (
-    <AiNarrativeCard
-      facts={hrToBriefing(mergedData, "30d").kpis}
-      anomalies={anomalies}
-      context={context}
-      result={narrative}
-      onGenerated={(result) => onNarrative?.(result)}
-    />
-  );
-})()}
-
+      {chartResults.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {chartResults.map((r, i) => {
+            if (r.spec.chartType === "bar") {
+              return (
+                <BarListChart
+                  key={i}
+                  title={r.spec.title}
+                  icon={Layers}
+                  barColor={COLORS.accent}
+                  rows={r.series}
+                  decimals={r.decimals === 2 ? 2 : undefined}
+                />
+              );
+            }
+            if (r.spec.chartType === "pie") {
+              return <ShareDonut key={i} title={r.spec.title} icon={PieChartIcon} rows={r.series} valueLabel="value" />;
+            }
+            return <TrendLineChart key={i} title={r.spec.title} rows={r.series} />;
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -2761,9 +2358,7 @@ function executiveToBriefing(
   data: ExecutiveData,
   range: Range,
   marketingData?: MarketingData,
-  operationsData?: OperationsData,
-  hrData?: HRData,
-  excel?: ExcelState
+  operationsData?: OperationsData
 ): BriefingData {
   const totalChannelSessions = data.channels.reduce((s, c) => s + c.sessions, 0);
   const topChannelShare =
@@ -2818,7 +2413,7 @@ function executiveToBriefing(
       },
     ],
     narrative: bullets.join(" "),
-    risks: crossDeptWatchGroupsToRisks(buildCrossDeptWatchGroups(marketingData, operationsData, hrData, excel)),
+    risks: crossDeptWatchGroupsToRisks(buildCrossDeptWatchGroups(marketingData, operationsData)),
   };
 }
 
@@ -2894,7 +2489,7 @@ function operationsToBriefing(data: OperationsData, range: Range): BriefingData 
   // rendered in "watch" amber — two components disagreeing about the color
   // of one metric, the exact bug class CLAUDE.md's color-consistency rule
   // calls out. Computed once here and reused by both the KPI pill and the
-  // drilldown table rows below, same pattern as classifyHrStatus.
+  // drilldown table rows below — status computed once, never re-derived.
   const routeStatus: Status = hasIssues ? "watch" : "ok";
   const routeStatusLabel = hasIssues ? "Needs Review" : "Clear";
 
@@ -2935,76 +2530,110 @@ function operationsToBriefing(data: OperationsData, range: Range): BriefingData 
   };
 }
 
-// Mirrors HrFactCard's existing `invertGoodDirection` logic — that
-// component already correctly knows rising attrition is bad on screen; the
-// PDF export must never disagree with what's already shown for the same
-// number. Thresholds come from data.companyTargets — real fields already
-// used by hrAnomaliesAndContext, nothing invented here.
-function classifyHrStatus(
-  fact: HRFact,
-  targets: HRData["companyTargets"]
-): { status: Status; statusLabel: string; deltaLabel: string; note?: string } {
-  const value = typeof fact.value === "number" ? fact.value : parseFloat(String(fact.value));
+// Unlike every other tab's adapter, this one has no fixed set of named
+// metrics to map — Custom Data's KPIs/charts are whatever AI suggested for
+// THIS file's columns (see /api/kpi-suggest), so this must handle any
+// number of specs with any titles, not a hardcoded list. Every number is
+// still recomputed here from the full dataset (never read off state as a
+// cached display string), same rule as CustomDataView on screen — the two
+// surfaces call the exact same computeChartSpec, so they can't disagree.
+function customDataToBriefing(state: CustomDataState): BriefingData {
+  const rows = state.data ?? [];
+  const specs = state.specs ?? [];
+  const results = specs.map((spec) => computeChartSpec(rows, spec, state.profile ?? undefined));
 
-  if (fact.id === "attrition") {
-    const max = targets.attritionTargetMax;
-    const critical = value >= max;
-    const rising = fact.delta?.direction === "up" && (fact.delta?.value ?? 0) > 0;
-    const status: Status = critical ? "critical" : rising ? "watch" : "ok";
-    const statusLabel = critical ? "Above Target" : rising ? "Rising · Watch" : "On Track";
-    const deltaLabel = fact.delta ? `${fact.delta.value}pp (< ${max}% Target)` : `< ${max}% Target`;
-    return { status, statusLabel, deltaLabel };
-  }
+  const kpiResults = results.filter((r) => r.spec.chartType === "kpi");
+  const chartResults = results.filter((r) => r.spec.chartType !== "kpi");
 
-  if (fact.id === "compliance") {
-    const min = targets.complianceTargetMin;
-    const below = value < min;
-    const status: Status = below ? "critical" : "ok";
-    const statusLabel = below ? "Below Target" : "On Track";
-    // Was `${min}.0%` — hardcoded a single trailing decimal on the
-    // assumption `min` is always a whole number (true for the 95 that
-    // ships as the default). An Excel-baseline override can be any
-    // decimal (e.g. 99.95), which turned this into "99.95.0%". Just
-    // interpolate the real number, same as the attrition branch above.
-    const deltaLabel = below ? `Below ${min}% Target` : `Above ${min}% Target`;
-    return { status, statusLabel, deltaLabel };
-  }
+  // Same display rule CustomDataView uses on screen: decimals is computed
+  // once by the aggregation engine per spec, never re-derived here.
+  const formatValue = (value: number, decimals: number) =>
+    decimals > 0 ? value.toFixed(decimals) : formatInteger(value);
 
-  if (fact.id === "headcount") {
-    // No real target exists for headcount. A small MoM move is noise, not
-    // a status signal — stays neutral regardless of direction, matching
-    // the "STABLE" pill already shown on screen.
-    // fact.delta.value is already signed here (hrFacts.ts's toDeltaField,
-    // used only for headcount, keeps the raw +/- pct — unlike
-    // toPointDeltaField for attrition/compliance, which Math.abs()'s it).
-    // Prepending another "+"/"-" on top double-signs a decrease into
-    // "--0.3%". The ArrowTriangle already shown next to this label carries
-    // the direction, same as HrFactCard's ▲/▼ glyph on screen — so just use
-    // the raw value, matching that pattern instead of re-deriving a sign.
-    const deltaLabel = fact.delta ? `${fact.delta.value}% MoM` : "—";
-    return { status: "neutral", statusLabel: "Stable", deltaLabel };
-  }
+  const kpis: BriefingFact[] = kpiResults.map((r, i) => ({
+    id: `custom_${i}`,
+    metric: r.spec.title,
+    // No real target/threshold exists for an arbitrary AI-suggested KPI —
+    // status is deliberately omitted (defaults to neutral), never guessed.
+    value:
+      typeof r.value === "number"
+        ? formatValue(r.value, r.decimals)
+        : r.value === null
+          ? "—"
+          : r.value,
+  }));
 
-  // Remaining fact (top hire source) — informational, no target to breach.
-  // Same pattern as Executive's "Top Channel" / Marketing's "Top Source":
-  // the share text is a plain caption (note), not a colored status pill —
-  // this number has no real target to be on/off track against, so it
-  // shouldn't be dressed up as a status judgment.
+  // BriefingData has room for exactly one chart and one drilldown table —
+  // every other tab's adapter already makes this same simplification (e.g.
+  // Marketing's on-screen tab has four charts; its briefing picks one
+  // drilldown table).
+  //
+  // The Chart component's bar rows use a small fixed-width label column
+  // (~28pt — sized for 3-letter month abbreviations, the only labels it
+  // was ever built to show). A category name that runs long (e.g. a course
+  // title) wraps into an unreadable multi-line mess there. The drilldown
+  // table's cell is a flexible flow layout that handles long text fine. So:
+  // prefer a "line" spec (its groups are always date-bucketed to "YYYY-MM"
+  // or "YYYY" — always short) for the chart slot; only use a bar/pie spec
+  // there if every one of its labels is actually short enough to fit.
+  // Anything not picked for chart still gets a shot at the drilldown table.
+  const hasOnlyShortLabels = (r: (typeof chartResults)[number]) => r.series.every((p) => p.label.length <= 14);
+  const chartResult =
+    chartResults.find((r) => r.spec.chartType === "line" && r.series.length > 0) ??
+    chartResults.find(
+      (r) => (r.spec.chartType === "bar" || r.spec.chartType === "pie") && r.series.length > 0 && hasOnlyShortLabels(r)
+    );
+  const chart: ComparisonChart | undefined = chartResult
+    ? {
+        title: chartResult.spec.title,
+        points: chartResult.series.map((p) => ({
+          label: p.label,
+          value: p.value,
+          display: formatValue(p.value, chartResult.decimals),
+        })),
+      }
+    : undefined;
+
+  const drilldownResult = chartResults.find((r) => r !== chartResult && r.series.length > 0);
+  const drilldown: DrilldownTable | undefined = drilldownResult
+    ? {
+        title: drilldownResult.spec.title,
+        columns: [drilldownResult.spec.groupByColumn ?? "Category", "Value"],
+        rows: drilldownResult.series.map((p) => ({
+          cells: [p.label, formatValue(p.value, drilldownResult.decimals)],
+          status: "neutral" as Status,
+        })),
+      }
+    : undefined;
+
+  const rowCount = rows.length;
+  const narrative =
+    `This report summarizes ${kpis.length} KPI${kpis.length === 1 ? "" : "s"}` +
+    (chartResults.length > 0
+      ? ` and ${chartResults.length} chart breakdown${chartResults.length === 1 ? "" : "s"}`
+      : "") +
+    `, computed from all ${rowCount} row${rowCount === 1 ? "" : "s"} of ${state.filename ?? "the uploaded file"}.`;
+
   return {
-    status: "neutral",
-    statusLabel: "",
-    deltaLabel: "",
-    note: fact.context,
+    reportTitle: "OneBoard Custom Data Briefing",
+    sectionLabel: "Custom Data",
+    dataSource: state.filename ?? "Uploaded file",
+    period: `${rowCount} row${rowCount === 1 ? "" : "s"} · full dataset`,
+    generatedAt: new Date().toLocaleString(),
+    kpis,
+    narrative,
+    chart,
+    drilldown,
   };
 }
 
 // Converts the AI's alerts ({label, detail}, no status — see route.ts's
 // AiNarrativeResult) into BriefingRisk[] by matching each alert back to
-// the KPI it's describing and reusing THAT KPI's already-computed status.
-// This is the actual mechanism behind the color-consistency rule: status
-// is computed once (in classifyHrStatus, above) and every other place it
-// appears just looks it up — nothing recomputes it independently, so
-// nothing can disagree with it.
+// the KPI it's describing and reusing THAT KPI's already-computed status
+// (e.g. operationsToBriefing's routeStatus). This is the actual mechanism
+// behind the color-consistency rule: status is computed once and every
+// other place it appears just looks it up — nothing recomputes it
+// independently, so nothing can disagree with it.
 function alertsToRisks(
   alerts: { label: string; detail: string }[],
   kpis: BriefingFact[]
@@ -3020,107 +2649,6 @@ function alertsToRisks(
       status: matched?.status ?? "watch",
     };
   });
-}
-
-function hrToBriefing(data: HRData, range: Range): BriefingData {
-  const kpis: BriefingFact[] = data.facts.map((f) => {
-    const { status, statusLabel, deltaLabel, note } = classifyHrStatus(f, data.companyTargets);
-    return {
-      id: f.id,
-      metric: f.metric,
-      value: f.value,
-      unit: f.unit,
-      status,
-      statusLabel,
-      note,
-      delta: f.delta ? { direction: f.delta.direction, label: deltaLabel } : undefined,
-    };
-  });
-
-  // Two-point chart. Its start point must match whatever the Watch Items
-  // text says the trend "since <Month>" is — both come from the exact same
-  // detectSustainedTrend() run, not two independently-chosen starting
-  // points, so the chart and the narrative can never disagree on where the
-  // trend began (same rule as the color-consistency system). If no
-  // sustained run reaches the latest point (e.g. attrition is flat), there's
-  // no "since X" claim being made anywhere else on the page either, so it
-  // falls back to the plain trailing-12-month first-vs-last reading.
-  const attritionSeries = data.monthlySnapshot.map((m) => ({
-    label: monthLabel(m.month),
-    value: m.attritionRate,
-  }));
-  const { runs: attritionRuns } = detectSustainedTrend(attritionSeries, "Attrition", 3, true);
-  const trailingRun = attritionRuns.find((r) => r.endIndex === data.monthlySnapshot.length - 1);
-
-  const first = data.monthlySnapshot[trailingRun ? trailingRun.startIndex : 0];
-  const last = data.monthlySnapshot[data.monthlySnapshot.length - 1];
-
-  const chart = first && last ? {
-    title: "Attrition Trend — Start vs. Current",
-    subtitle: trailingRun
-      ? `${trailingRun.endIndex - trailingRun.startIndex + 1}-month ${trailingRun.direction === "up" ? "upward" : "downward"} run, first vs. most recent reading`
-      : "Trailing 12-month attrition, first vs. most recent reading",
-    points: [
-      { label: monthLabel(first.month), value: first.attritionRate, display: `${first.attritionRate}%` },
-      { label: monthLabel(last.month), value: last.attritionRate, display: `${last.attritionRate}%` },
-    ],
-    gauge: {
-      label: "Compliance vs. Target",
-      value: last.complianceRate,
-      target: data.companyTargets.complianceTargetMin,
-      display: `${last.complianceRate}%`,
-      footnote: `Target = ${data.companyTargets.complianceTargetMin}% internal minimum`,
-    },
-  } : undefined;
-
-  const narrative = data.facts
-    .map((f) => f.context)
-    .filter((c): c is string => !!c)
-    .join(" ");
-
-  return {
-    reportTitle: "HR & Workforce Performance",
-    sectionLabel: "HR View",
-    audience: "Executive Leadership",
-    dataSource: "Sample HR Dataset (Illustrative)",
-    period: "Trailing 12 Months",
-    generatedAt: new Date().toLocaleString(),
-    kpis,
-    chart,
-    narrative: narrative || "No additional context available for this period.",
-  };
-}
-
-
-function hrAnomaliesAndContext(data: HRData) {
-  const attritionSeries = data.monthlySnapshot.map((m) => ({
-    label: monthLabel(m.month),
-    value: m.attritionRate,
-  }));
-  const complianceSeries = data.monthlySnapshot.map((m) => ({
-    label: monthLabel(m.month),
-    value: m.complianceRate,
-  }));
-
-  const anomalies = [
-    ...detectAnomalies(attritionSeries, "Attrition", {
-      target: { max: data.companyTargets.attritionTargetMax },
-      valueIsPercentage: true,
-    }),
-    ...detectAnomalies(complianceSeries, "Compliance", {
-      target: { min: data.companyTargets.complianceTargetMin },
-      valueIsPercentage: true,
-    }),
-  ];
-
-  const context = {
-    attritionTargetMax: data.companyTargets.attritionTargetMax,
-    complianceTargetMin: data.companyTargets.complianceTargetMin,
-    currentAttrition: data.monthlySnapshot[data.monthlySnapshot.length - 1]?.attritionRate,
-    currentCompliance: data.monthlySnapshot[data.monthlySnapshot.length - 1]?.complianceRate,
-  };
-
-  return { anomalies, context };
 }
 
 function marketingAnomaliesAndContext(data: MarketingData) {
@@ -3253,8 +2781,7 @@ function executiveCrossDeptFacts(
   execData: ExecutiveData,
   range: Range,
   marketingData?: MarketingData,
-  operationsData?: OperationsData,
-  hrData?: HRData
+  operationsData?: OperationsData
 ): AiNarrativeFact[] {
   const facts: AiNarrativeFact[] = executiveToBriefing(execData, range).kpis.map((f) =>
     toNarrativeFact(f, "executive", "Executive")
@@ -3272,10 +2799,6 @@ function executiveCrossDeptFacts(
     );
   }
 
-  if (hrData) {
-    facts.push(...hrToBriefing(hrData, range).kpis.map((f) => toNarrativeFact(f, "hr", "HR")));
-  }
-
   return facts;
 }
 
@@ -3288,119 +2811,49 @@ function anomalySeverityToStatus(severity: AiAnomaly["severity"]): Status {
 }
 
 interface DeptWatchGroup {
-  department: "marketing" | "operations" | "hr";
+  department: "marketing" | "operations";
   label: string;
-  targetRatio: { onTarget: number; total: number; misses: string[] } | null;
   anomalies: AiAnomaly[];
 }
 
-// Executive's cross-department Watch Items summary: reads what each tab
-// has ALREADY computed (the Excel-baseline target matches from the blend
-// feature, plus each tab's existing rule-based anomaly detector) and
-// re-labels it by source department. Executive never recomputes a
-// judgment of its own here — same principle as executiveCrossDeptFacts
-// above, just for risks instead of plain facts. A department with
-// neither a target ratio nor any anomalies is omitted entirely, not
-// shown as an empty/zero placeholder.
+// Executive's cross-department Watch Items summary: reads what each tab's
+// existing rule-based anomaly detector has ALREADY computed and re-labels
+// it by source department. Executive never recomputes a judgment of its
+// own here — same principle as executiveCrossDeptFacts above, just for
+// risks instead of plain facts. A department with no anomalies is omitted
+// entirely, not shown as an empty placeholder.
 function buildCrossDeptWatchGroups(
   marketingData: MarketingData | undefined,
-  operationsData: OperationsData | undefined,
-  hrData: HRData | undefined,
-  excel: ExcelState | undefined
+  operationsData: OperationsData | undefined
 ): DeptWatchGroup[] {
   const groups: DeptWatchGroup[] = [];
 
   if (marketingData) {
-    let targetRatio: DeptWatchGroup["targetRatio"] = null;
-    if (excel?.classified) {
-      const deptRows = selectDeptRows(excel, "marketing");
-      const matches = matchExcelChannelTargets(deptRows, marketingData.channels ?? []);
-      if (matches) {
-        targetRatio = {
-          onTarget: matches.filter((m) => m.onTrack).length,
-          total: matches.length,
-          misses: matches.filter((m) => !m.onTrack).map((m) => m.channel),
-        };
-      }
-    }
     const anomalies = marketingAnomaliesAndContext(marketingData).anomalies;
-    if (targetRatio || anomalies.length > 0) {
-      groups.push({ department: "marketing", label: "Marketing", targetRatio, anomalies });
+    if (anomalies.length > 0) {
+      groups.push({ department: "marketing", label: "Marketing", anomalies });
     }
   }
 
   if (operationsData) {
-    let targetRatio: DeptWatchGroup["targetRatio"] = null;
-    if (excel?.classified) {
-      const matches = matchExcelMetricTargets(excel, [
-        {
-          metricKey: "bounceRateTarget",
-          label: "Bounce Rate",
-          actual: Math.round(operationsData.summary.bounceRate * 100),
-          lowerIsBetter: true,
-        },
-        {
-          metricKey: "avgEngagementDurationTargetSeconds",
-          label: "Avg. Engagement Duration",
-          actual: operationsData.summary.avgSessionDuration,
-        },
-      ]);
-      if (matches) {
-        targetRatio = {
-          onTarget: matches.filter((m) => m.onTrack).length,
-          total: matches.length,
-          misses: matches.filter((m) => !m.onTrack).map((m) => m.label),
-        };
-      }
-    }
     const anomalies = operationsAnomalies(operationsData);
-    if (targetRatio || anomalies.length > 0) {
-      groups.push({ department: "operations", label: "Operations", targetRatio, anomalies });
-    }
-  }
-
-  if (hrData) {
-    // HR has no TargetBlendCard (it overrides companyTargets instead —
-    // see mergeHrOverrides) — its ratio comes from the same
-    // classifyHrStatus/hrToBriefing status every other HR surface
-    // already uses, not a re-derivation.
-    const hrKpis = hrToBriefing(hrData, "30d").kpis;
-    const tracked = hrKpis.filter((k) => k.id === "attrition" || k.id === "compliance");
-    const targetRatio: DeptWatchGroup["targetRatio"] =
-      tracked.length > 0
-        ? {
-            onTarget: tracked.filter((k) => k.status !== "critical").length,
-            total: tracked.length,
-            misses: tracked.filter((k) => k.status === "critical").map((k) => k.metric),
-          }
-        : null;
-    const anomalies = hrAnomaliesAndContext(hrData).anomalies;
-    if (targetRatio || anomalies.length > 0) {
-      groups.push({ department: "hr", label: "HR", targetRatio, anomalies });
+    if (anomalies.length > 0) {
+      groups.push({ department: "operations", label: "Operations", anomalies });
     }
   }
 
   return groups;
 }
 
-// Converts DeptWatchGroup[] into the PDF's BriefingRisk[] — one risk row
-// for the ratio (when there are any target-matched rows for that dept)
-// plus one row per anomaly, each labeled with its source department so
-// the PDF's flat Watch Items list still reads as grouped by origin. Same
-// status computation as the on-screen CrossDeptWatchSummary
-// (anomalySeverityToStatus) — the two surfaces read the same underlying
-// groups, so a signal can't be colored differently between them.
+// Converts DeptWatchGroup[] into the PDF's BriefingRisk[] — one row per
+// anomaly, labeled with its source department so the PDF's flat Watch
+// Items list still reads as grouped by origin. Same status computation as
+// the on-screen CrossDeptWatchSummary (anomalySeverityToStatus) — the two
+// surfaces read the same underlying groups, so a signal can't be colored
+// differently between them.
 function crossDeptWatchGroupsToRisks(groups: DeptWatchGroup[]): BriefingRisk[] {
   const risks: BriefingRisk[] = [];
   for (const g of groups) {
-    if (g.targetRatio) {
-      const { onTarget, total, misses } = g.targetRatio;
-      risks.push({
-        label: `${g.label} — ${onTarget}/${total} Metrics On Target`,
-        detail: misses.length > 0 ? `Off target: ${misses.join(", ")}.` : "All matched metrics on target.",
-        status: onTarget === total ? "ok" : "watch",
-      });
-    }
     for (const a of g.anomalies) {
       risks.push({
         label: `${g.label} — ${a.label}`,
@@ -3450,58 +2903,27 @@ export default function Home() {
     executive?: AiNarrativeResult;
     marketing?: AiNarrativeResult;
     operations?: AiNarrativeResult;
-    hr?: AiNarrativeResult;
   }>({});
 
-  const [excel, setExcel] = useState<ExcelState>({
+  const [customData, setCustomData] = useState<CustomDataState>({
     connected: false,
     filename: null,
     rows: null,
     source: null,
     data: null,
-    classified: null,
-    classifying: false,
-    classifyError: null,
+    profile: null,
+    specs: null,
+    suggesting: false,
+    suggestError: null,
   });
 
-  // Classification runs once per upload and is persisted so a page reload
-  // reuses it instead of calling the AI again — see EXCEL_BLEND_STORAGE_KEY.
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(EXCEL_BLEND_STORAGE_KEY);
-      if (!raw) return;
-      const saved = JSON.parse(raw) as {
-        filename: string | null;
-        source: "upload" | "demo" | null;
-        data: Record<string, unknown>[] | null;
-        classified: ExcelRowClassification[] | null;
-      };
-      if (saved.data && saved.classified) {
-        setExcel({
-          connected: true,
-          filename: saved.filename,
-          rows: saved.data.length,
-          source: saved.source,
-          data: saved.data,
-          classified: saved.classified,
-          classifying: false,
-          classifyError: null,
-        });
-      }
-    } catch {
-      // Corrupt/unavailable storage — start from the empty default, same
-      // as never having uploaded anything.
-    }
-  }, []);
-
-  const [excelError, setExcelError] = useState<string | null>(null);
-  const [excelLoading, setExcelLoading] = useState(false);
+  const [customDataError, setCustomDataError] = useState<string | null>(null);
+  const [customDataLoading, setCustomDataLoading] = useState(false);
 
   const [latestData, setLatestData] = useState<{
     executive?: ExecutiveData;
     operations?: OperationsData;
     marketing?: MarketingData;
-    hr?: HRData;
   }>({});
   const [lastMs, setLastMs] = useState<number | undefined>(undefined);
   const [tabMs, setTabMs] = useState<{
@@ -3547,9 +2969,6 @@ export default function Home() {
     setTabMs((prev) => ({ ...prev, marketing: ms }));
   }
 
-  function handleHRData(data: HRData) {
-    setLatestData((prev) => ({ ...prev, hr: data }));
-  }
   function handleExecutiveNarrative(result: AiNarrativeResult) {
     setAiNarratives((prev) => ({ ...prev, executive: result}));
   }
@@ -3559,66 +2978,59 @@ export default function Home() {
   function handleOperationsNarrative(result: AiNarrativeResult) {
     setAiNarratives((prev) => ({ ...prev, operations: result }));
   }
-  function handleHRNarrative(result: AiNarrativeResult) {
-    setAiNarratives((prev) => ({ ...prev, hr: result }));
-  }
 
 
-  // Shared by both upload paths (real file / demo file) — one classify
-  // call, right after parsing, never re-run per report. Persists the
-  // result so a page reload reuses it (see EXCEL_BLEND_STORAGE_KEY).
-  async function classifyAndStore(
+  // Shared by both upload paths (real file / demo file) — one profile ->
+  // suggest call, right after parsing, never re-run per render. The
+  // profile (column names/types/samples) is all the AI ever sees; the
+  // actual chart numbers are computed afterward, in code, from the full
+  // `rows` dataset (see aggregationEngine.ts / CustomDataView).
+  async function suggestAndStore(
     filename: string,
     source: "upload" | "demo",
     rows: Record<string, unknown>[]
   ) {
-    setExcel((prev) => ({
+    const profile = profileColumns(rows);
+    setCustomData((prev) => ({
       ...prev,
       connected: true,
       filename,
       rows: rows.length,
       source,
       data: rows,
-      classifying: true,
-      classified: null,
-      classifyError: null,
+      profile,
+      suggesting: true,
+      specs: null,
+      suggestError: null,
     }));
     try {
       const columns = Object.keys(rows[0] ?? {});
-      const res = await fetch("/api/excel-classify", {
+      const res = await fetch("/api/kpi-suggest", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ columns, rows }),
+        body: JSON.stringify({ columns, profile, sampleRows: sampleRowsForProfile(rows) }),
       });
       const json = await res.json();
       if (!res.ok || json.error) {
         throw new Error(json.error || `HTTP ${res.status}`);
       }
       if (json.available === false) {
-        throw new Error("AI classification is unavailable (no API key configured).");
+        throw new Error("AI KPI suggestion is unavailable (no API key configured).");
       }
-      const classified: ExcelRowClassification[] = json.classifications ?? [];
-      setExcel((prev) => ({ ...prev, classifying: false, classified }));
-      try {
-        localStorage.setItem(
-          EXCEL_BLEND_STORAGE_KEY,
-          JSON.stringify({ filename, source, data: rows, classified })
-        );
-      } catch {
-        // Storage unavailable — classification still works for this
-        // session, just won't survive a reload.
-      }
+      const specs: ChartSpec[] = json.specs ?? [];
+      setCustomData((prev) => ({ ...prev, suggesting: false, specs }));
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Could not classify this data.";
-      setExcel((prev) => ({ ...prev, classifying: false, classifyError: message }));
+      const message = e instanceof Error ? e.message : "Could not suggest KPIs for this data.";
+      setCustomData((prev) => ({ ...prev, suggesting: false, suggestError: message }));
     }
   }
 
-  async function handleExcelFileSelect(file: File) {
-  setExcelError(null);
-  setExcelLoading(true);
+  async function handleFileSelect(file: File) {
+  setCustomDataError(null);
+  setCustomDataLoading(true);
+  setTab("Custom Data");
 
-  setExcel((prev) => ({ ...prev, connected: true, filename: file.name, rows: null, source: "upload", data: null }));
+  setCustomData((prev) => ({ ...prev, connected: true, filename: file.name, rows: null, source: "upload", data: null }));
 
   try {
     const isCsv = file.name.toLowerCase().endsWith(".csv");
@@ -3647,24 +3059,25 @@ export default function Home() {
       throw new Error("No data rows found — check the file has a header row plus at least one data row.");
     }
 
-    await classifyAndStore(file.name, "upload", rows);
+    await suggestAndStore(file.name, "upload", rows);
   } catch (e) {
-    setExcelError(e instanceof Error ? e.message : "Could not parse this file.");
-    setExcel((prev) => ({ ...prev, connected: false, filename: null, rows: null, source: null, data: null, classified: null }));
+    setCustomDataError(e instanceof Error ? e.message : "Could not parse this file.");
+    setCustomData((prev) => ({ ...prev, connected: false, filename: null, rows: null, source: null, data: null, profile: null, specs: null }));
   } finally {
-    setExcelLoading(false);
+    setCustomDataLoading(false);
   }
 }
 
-async function handleLoadDemoExcel() {
+async function handleLoadDemoData() {
     setDemoLoading(true);
     setDemoError(null);
+    setTab("Custom Data");
     try {
       const res = await fetch("/demo-baseline.csv");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
       const parsed = Papa.parse<Record<string, unknown>>(text, { header: true, skipEmptyLines: true });
-      await classifyAndStore("demo-baseline.csv", "demo", parsed.data);
+      await suggestAndStore("demo-baseline.csv", "demo", parsed.data);
     } catch (e) {
       setDemoError("Could not load the demo dataset.");
     } finally {
@@ -3686,9 +3099,7 @@ async function handleLoadDemoExcel() {
         latestData.executive,
         range,
         latestData.marketing,
-        latestData.operations,
-        latestData.hr,
-        excel
+        latestData.operations
       );
       narrativeResult = aiNarratives.executive ?? null;
       if (!narrativeResult) {
@@ -3696,14 +3107,8 @@ async function handleLoadDemoExcel() {
           latestData.executive,
           range,
           latestData.marketing,
-          latestData.operations,
-          latestData.hr
+          latestData.operations
         );
-        const hrPart = latestData.hr
-          ? hrAnomaliesAndContext(latestData.hr)
-          : { anomalies: [] as AiAnomaly[], context: undefined as Record<string, number | string> | undefined };
-        inputAnomalies = hrPart.anomalies;
-        inputContext = hrPart.context;
       }
     } else if (tab === "Marketing" && latestData.marketing) {
       briefing = marketingToBriefing(latestData.marketing, range);
@@ -3721,15 +3126,13 @@ async function handleLoadDemoExcel() {
         inputFacts = briefing.kpis;
         inputAnomalies = operationsAnomalies(latestData.operations);
       }
-    } else if (tab === "HR" && latestData.hr) {
-      briefing = hrToBriefing(latestData.hr, range);
-      narrativeResult = aiNarratives.hr ?? null;
-      if (!narrativeResult) {
-        inputFacts = briefing.kpis;
-        const hrPart = hrAnomaliesAndContext(latestData.hr);
-        inputAnomalies = hrPart.anomalies;
-        inputContext = hrPart.context;
-      }
+    } else if (tab === "Custom Data" && isCustomDataReady(customData)) {
+      // Custom Data has no AI Narrative surface on screen (see
+      // CustomDataView) and no fixed metric set to seed one from — leave
+      // narrativeResult/inputFacts unset so the auto-generate block below
+      // is skipped entirely; the plain, rule-based narrative
+      // customDataToBriefing already wrote onto `briefing` stands as-is.
+      briefing = customDataToBriefing(customData);
     }
 
     if (!briefing) {
@@ -3747,7 +3150,6 @@ async function handleLoadDemoExcel() {
         if (tab === "Executive") setAiNarratives((prev) => ({ ...prev, executive: generated }));
         if (tab === "Marketing") setAiNarratives((prev) => ({ ...prev, marketing: generated }));
         if (tab === "Operations") setAiNarratives((prev) => ({ ...prev, operations: generated }));
-        if (tab === "HR") setAiNarratives((prev) => ({ ...prev, hr: generated }));
       }
     }
 
@@ -3758,10 +3160,8 @@ async function handleLoadDemoExcel() {
       // Items summary set by executiveToBriefing above (real, rule-based,
       // correctly labeled by source department). alertsToRisks matches the
       // AI's alerts against THIS tab's own kpis, which for Executive would
-      // silently replace that with a weaker match (Executive's AI alerts
-      // are seeded from HR anomalies alone, matched against Executive's
-      // unrelated active_users/sessions/etc. kpi ids). Every other tab
-      // still gets its risks from alertsToRisks as before.
+      // silently replace that with a weaker match. Every other tab still
+      // gets its risks from alertsToRisks as before.
       if (tab !== "Executive") {
         briefing.risks = alertsToRisks(narrativeResult.alerts, briefing.kpis);
       }
@@ -3786,7 +3186,7 @@ async function handleLoadDemoExcel() {
       timestamp: new Date().toISOString(),
     },
     liveTelemetry: latestData,
-    excelSnapshot: excel,
+    customDataSnapshot: customData,
   };
 
   return (
@@ -3803,8 +3203,8 @@ async function handleLoadDemoExcel() {
         .ob-fade-in { animation: ob-fade-in 260ms ease-out; }
         /* Inactive tab panels stay mounted (their data-fetching hooks keep
            running so cross-department data like the Executive briefing's
-           marketing/operations/hr facts are available without visiting
-           those tabs first) but must not be display:none — a display:none
+           marketing/operations facts are available without visiting those
+           tabs first) but must not be display:none — a display:none
            box is 0x0, and Recharts' ResponsiveContainer measures that via
            ResizeObserver, logging "width(0) and height(0)" for every chart
            in every inactive tab on every layout pass. visibility:hidden
@@ -3913,7 +3313,7 @@ async function handleLoadDemoExcel() {
                 </span>
               </div>
               <p className="text-xs font-medium mt-0.5" style={{ color: COLORS.inkSoft }}>
-                Live GA4 Web Telemetry API + Excel Baseline Blending
+                Live GA4 Web Telemetry API + AI-Generated KPIs from Any File
               </p>
             </div>
           </div>
@@ -3944,24 +3344,26 @@ async function handleLoadDemoExcel() {
             </div>
 
             <button
-              onClick={handleLoadDemoExcel}
+              onClick={handleLoadDemoData}
               disabled={demoLoading}
               className="ob-header-btn text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-2 transition active:scale-95 disabled:opacity-60"
               style={{ background: COLORS.accentSoft, color: COLORS.accent, border: "1px solid transparent" }}
             >
               <FileSpreadsheet size={14} />
-              {demoLoading ? "Loading…" : "Load Sample Baseline"}
+              {demoLoading ? "Loading…" : "Load Sample Data"}
             </button>
 
-            <button
-            onClick={handleExportBriefing}
-            disabled={briefingLoading}
-            className="ob-header-btn text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-2 transition active:scale-95 disabled:opacity-60"
-            style={{ background: COLORS.indigoSoft, color: COLORS.indigo, border: "1px solid transparent" }}
-            >
-            {briefingLoading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
-            {briefingLoading ? "Generating…" : "Export Report"}
-            </button>
+            {EXPORT_REPORT_ENABLED && (
+              <button
+              onClick={handleExportBriefing}
+              disabled={briefingLoading}
+              className="ob-header-btn text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-2 transition active:scale-95 disabled:opacity-60"
+              style={{ background: COLORS.indigoSoft, color: COLORS.indigo, border: "1px solid transparent" }}
+              >
+              {briefingLoading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+              {briefingLoading ? "Generating…" : "Export Report"}
+              </button>
+            )}
 
             <button
               onClick={() => setShowPayload(true)}
@@ -3975,12 +3377,12 @@ async function handleLoadDemoExcel() {
         </header>
 
         {demoError && <ErrorBox message={demoError} />}
-        {excelError && <ErrorBox message={excelError} />}
+        {customDataError && <ErrorBox message={customDataError} />}
 
         <SourcePanel
           activeEndpoint={
-            tab === "HR"
-              ? "/api/hr (sample, client-side)"
+            tab === "Custom Data"
+              ? "/api/kpi-suggest (client-computed)"
               : `/api/ga4/${tab.toLowerCase()} (${
                   (tab === "Executive"
                     ? tabMs.executive
@@ -3989,11 +3391,9 @@ async function handleLoadDemoExcel() {
                     : tabMs.operations) ?? "…"
                 }ms)`
           }
-          excel={excel}
-
-          onExcelFileSelect={handleExcelFileSelect}
-          hrActive={tab === "HR"}
-          activeDepartment={tab.toLowerCase() as ExcelDepartment}
+          customData={customData}
+          onFileSelect={handleFileSelect}
+          customDataActive={tab === "Custom Data"}
         />
 
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -4013,11 +3413,11 @@ async function handleLoadDemoExcel() {
               variant="accent"
             />
           </div>
-          {tab !== "HR" ? (
+          {tab !== "Custom Data" ? (
             <SegmentedControl options={RANGES} value={range} onChange={setRange} size="sm" variant="accent" />
           ) : (
             <span className="text-xs font-medium" style={{ color: COLORS.inkFaint }}>
-              Trailing 12 months
+              All uploaded rows
             </span>
           )}
         </div>
@@ -4031,18 +3431,16 @@ async function handleLoadDemoExcel() {
               narrative={aiNarratives.executive}
               marketingData={latestData.marketing}
               operationsData={latestData.operations}
-              hrData={latestData.hr}
-              excel={excel}
             />
           </div>
           <div className={tab === "Marketing" ? "ob-fade-in" : "ob-tab-inactive"}>
-            <MarketingView range={range} onData={handleMarketingData} onNarrative={handleMarketingNarrative} narrative={aiNarratives.marketing} excel={excel} />
+            <MarketingView range={range} onData={handleMarketingData} onNarrative={handleMarketingNarrative} narrative={aiNarratives.marketing} />
           </div>
           <div className={tab === "Operations" ? "ob-fade-in" : "ob-tab-inactive"}>
-            <OperationsView range={range} onData={handleOperationsData} onNarrative={handleOperationsNarrative} narrative={aiNarratives.operations} excel={excel} />
+            <OperationsView range={range} onData={handleOperationsData} onNarrative={handleOperationsNarrative} narrative={aiNarratives.operations} />
           </div>
-          <div className={tab === "HR" ? "ob-fade-in" : "ob-tab-inactive"}>
-            <HRView onData={handleHRData} onNarrative={handleHRNarrative} narrative={aiNarratives.hr} excel={excel} />
+          <div className={tab === "Custom Data" ? "ob-fade-in" : "ob-tab-inactive"}>
+            <CustomDataView state={customData} onLoadDemo={handleLoadDemoData} demoLoading={demoLoading} />
           </div>
         </div>
 
@@ -4051,7 +3449,7 @@ async function handleLoadDemoExcel() {
           style={{ borderTop: `1px solid ${COLORS.line}`, color: COLORS.inkFaint }}
         >
           <span>OneBoard · Built with Next.js, TypeScript &amp; the GA4 Data API</span>
-          <span>Created on Aug 08, 2026</span>
+          <span>Created on Aug 2026</span>
         </div>
       </main>
 
