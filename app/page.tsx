@@ -1665,7 +1665,7 @@ function ExecutiveView({
           badge={activeUsersDelta !== null ? <DeltaBadge value={activeUsersDelta} /> : undefined}
         >
           <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={trend} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
+            <AreaChart data={trend} margin={{ top: 4, right: 50, bottom: 0, left: -16 }}>
               <defs>
                 <linearGradient id="ob-gradient-active-users" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={COLORS.accent} stopOpacity={0.25} />
@@ -2198,7 +2198,7 @@ function TrendLineChart({ title, rows }: { title: string; rows: { label: string;
         </p>
       ) : (
         <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={rows} margin={{ top: 4, right: 24, bottom: 0, left: -16 }}>
+          <LineChart data={rows} margin={{ top: 4, right: 60, bottom: 0, left: -16 }}>
             <CartesianGrid stroke={COLORS.line} vertical={false} strokeDasharray="3 3" />
             <XAxis
               dataKey="label"
@@ -2207,7 +2207,7 @@ function TrendLineChart({ title, rows }: { title: string; rows: { label: string;
               tickLine={false}
               axisLine={false}
               interval={tickInterval(rows.length)}
-              padding={{ right: 16 }}
+              padding={{ right: 30 }}
             />
             <YAxis fontSize={11} stroke={COLORS.inkFaint} tickLine={false} axisLine={false} allowDecimals={false} />
             <Tooltip content={<ChartTooltip />} />
