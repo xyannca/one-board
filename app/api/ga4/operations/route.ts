@@ -59,7 +59,7 @@ export async function GET(request: Request) {
       dimensions: [{ name: "pageTitle" }],
       metrics: [{ name: "screenPageViews" }],
       orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }],
-      limit: 10,
+      limit: 100,
     });
 
     // Device category (desktop / mobile / tablet)
@@ -78,7 +78,7 @@ export async function GET(request: Request) {
       dimensions: [{ name: "browser" }],
       metrics: [{ name: "sessions" }],
       orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
-      limit: 8,
+      limit: 100,
     });
 
     // Operating system
@@ -88,7 +88,7 @@ export async function GET(request: Request) {
       dimensions: [{ name: "operatingSystem" }],
       metrics: [{ name: "sessions" }],
       orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
-      limit: 8,
+      limit: 100,
     });
 
     const summaryRow = summaryReport.rows?.[0];

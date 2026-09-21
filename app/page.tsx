@@ -6,6 +6,7 @@ import { detectAnomalies } from "./api/ai-narrative/_lib/anomalies";
 import type { AiNarrativeFact, AiAnomaly, AiNarrativeResult } from "../types/ai-narrative";
 import type { BriefingData, BriefingFact, BriefingRisk, ComparisonChart, DrilldownTable, Status } from "../components/ExecutiveBriefingPDF";
 import type { ChartSpec, ColumnProfile } from "../types/kpi-spec";
+import { Mail } from "lucide-react";
 import { profileColumns, sampleRows as sampleRowsForProfile } from "./api/kpi-suggest/_lib/columnProfiler";
 import { computeChartSpec } from "./api/kpi-suggest/_lib/aggregationEngine";
 import * as XLSX from "xlsx";
@@ -3445,11 +3446,26 @@ async function handleLoadDemoData() {
         </div>
 
         <div
-          className="mt-6 pt-4 flex flex-wrap items-center justify-between gap-2 text-[8px]"
+          className="mt-6 pt-6 flex flex-wrap items-center justify-between gap-2 text-[10px]"
           style={{ borderTop: `1px solid ${COLORS.line}`, color: COLORS.inkFaint }}
         >
           <span>OneBoard · Built with Next.js, TypeScript &amp; the GA4 Data API</span>
-          <span>Created on Aug 2026</span>
+          
+          <a
+            href="mailto:xyannca@gmail.com"
+            onClick={() => {
+              if (typeof window !== 'undefined' && typeof (window as any).gtag === 'function') {
+                (window as any).gtag('event', 'click_contact', { method: 'email' });
+              }
+            }}
+            className="inline-flex items-center gap-1 text-emerald-400 hover:text-emerald-300 transition-colors"
+          
+          >
+            <Mail size={10} strokeWidth={1.5} />
+            Contact
+          </a>
+
+          <span>August 2026</span>
         </div>
       </main>
 

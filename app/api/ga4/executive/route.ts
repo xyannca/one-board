@@ -22,7 +22,8 @@ export async function GET(request: Request) {
     }
 
     const range = parseRange(request.url);
-    const startDate = rangeToStartDate(range);
+    const startDate = rangeToStartDate(range);  
+    console.log("DEBUG range:", range, "startDate:", startDate, "endDate: today");
     const client = getClient();
     const t0 = Date.now();
 
@@ -74,7 +75,7 @@ export async function GET(request: Request) {
       dimensions: [{ name: "country" }],
       metrics: [{ name: "activeUsers" }],
       orderBys: [{ metric: { metricName: "activeUsers" }, desc: true }],
-      limit: 10,
+      limit: 100,
     });
 
     // Active users by city
@@ -84,7 +85,7 @@ export async function GET(request: Request) {
       dimensions: [{ name: "city" }],
       metrics: [{ name: "activeUsers" }],
       orderBys: [{ metric: { metricName: "activeUsers" }, desc: true }],
-      limit: 10,
+      limit: 100,
     });
 
     // New vs returning users

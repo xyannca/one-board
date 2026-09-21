@@ -33,7 +33,7 @@ export async function GET(request: Request) {
       dimensions: [{ name: "sessionSourceMedium" }],
       metrics: [{ name: "sessions" }],
       orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
-      limit: 10,
+      limit: 100,
     });
 
     // Top pages by views
@@ -43,7 +43,7 @@ export async function GET(request: Request) {
       dimensions: [{ name: "pageTitle" }],
       metrics: [{ name: "screenPageViews" }],
       orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }],
-      limit: 10,
+      limit: 100,
     });
 
     // Landing pages
@@ -53,7 +53,7 @@ export async function GET(request: Request) {
       dimensions: [{ name: "landingPage" }],
       metrics: [{ name: "sessions" }],
       orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
-      limit: 10,
+      limit: 100,
     });
 
     // Channel group breakdown (for the channel radar chart) — same dimension
