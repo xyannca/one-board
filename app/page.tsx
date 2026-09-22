@@ -3455,7 +3455,7 @@ async function handleLoadDemoData() {
             href="mailto:xyannca@gmail.com"
             onClick={() => {
               if (typeof window !== 'undefined' && typeof (window as any).gtag === 'function') {
-                (window as any).gtag('event', 'click_contact', { method: 'email' });
+                (window as any).gtag('event', 'contact', { method: 'email' });
               }
             }}
             className="inline-flex items-center gap-1 text-emerald-400 hover:text-emerald-300 transition-colors"
