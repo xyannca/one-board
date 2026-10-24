@@ -1661,7 +1661,7 @@ function ExecutiveView({
 
       <div id="ob-chart-executive" className="mb-4">
         <Card
-          title={`Live Sessions Trend · ${rangeLabel(range)}`}
+          title={`Active Users Trend · ${rangeLabel(range)}`}
           icon={TrendingUp}
           badge={activeUsersDelta !== null ? <DeltaBadge value={activeUsersDelta} /> : undefined}
         >
